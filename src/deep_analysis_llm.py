@@ -15,8 +15,8 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 
-from llm_client import get_llm_client
-from prompts import (
+from .llm_client import get_llm_client
+from .prompts import (
     PROMPT_RELATIONSHIP_INFERENCE,
     PROMPT_USER_STRATEGY,
     PROMPT_VIRAL_CONTENT,

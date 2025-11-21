@@ -40,17 +40,11 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: Unzip Data
-      run: |
-        if [ -f X_followers.zip ]; then unzip -o X_followers.zip; fi
-        if [ -f X_replies.zip ]; then unzip -o X_replies.zip; fi
-        ls -F
-
     - name: Phase 1 - Deep Mining
       if: ${{ inputs.run_phase1 == true }}
       run: |
         echo "Running Phase 1: Deep Mining..."
-        python deep_mining.py
+        python -m src.deep_mining
 
     - name: Phase 2 - LLM Analysis
       if: ${{ inputs.run_phase2 == true }}
@@ -62,7 +56,7 @@ jobs:
         echo "Running Phase 2: LLM Analysis..."
         # Note: deep_analysis_llm.py uses config.py which reads env vars
         # Make sure to set OPENAI_API_KEY in GitHub Secrets
-        python deep_analysis_llm.py
+        python -m src.deep_analysis_llm
       continue-on-error: true
 
     - name: Archive Analysis Results

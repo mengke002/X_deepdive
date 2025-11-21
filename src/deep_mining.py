@@ -18,7 +18,7 @@ from tqdm import tqdm
 import warnings
 
 # 导入基础分析器
-from macro_analysis import MacroNetworkAnalyzer
+from .macro_analysis import MacroNetworkAnalyzer
 
 warnings.filterwarnings('ignore')
 

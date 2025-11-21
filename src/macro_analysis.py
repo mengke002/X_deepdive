@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 import warnings
 from tqdm import tqdm
+from .utils import ensure_data_ready
+
 warnings.filterwarnings('ignore')
 
 class MacroNetworkAnalyzer:
@@ -37,6 +39,9 @@ class MacroNetworkAnalyzer:
                 - 整数: 自定义采样数量
                 - None: 自动选择（根据网络规模智能调整）
         """
+        # 确保数据就绪（自动解压）
+        ensure_data_ready(followers_dir, replies_dir)
+
         self.followers_dir = followers_dir
         self.replies_dir = replies_dir
         self.use_approximation = use_approximation

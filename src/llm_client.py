@@ -7,7 +7,7 @@ import time
 from typing import Dict, Any, List, Optional
 from openai import OpenAI
 
-from config import config
+from .config import config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
