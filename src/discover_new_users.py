@@ -4,6 +4,7 @@ import os
 import glob
 from collections import defaultdict
 import logging
+from .utils import ensure_data_ready
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,6 +19,9 @@ class NewUserDiscoverer:
     - 使用回复者的PageRank作为权重进行排序
     """
     def __init__(self, replies_dir='X_replies', followers_dir='X_followers', output_dir='output'):
+        # 确保数据就绪
+        ensure_data_ready(followers_dir, replies_dir)
+
         self.replies_dir = replies_dir
         self.followers_dir = followers_dir
         self.output_dir = output_dir
