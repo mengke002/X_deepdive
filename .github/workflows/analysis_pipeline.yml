@@ -1,0 +1,89 @@
+name: X Network Analysis Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_phase1:
+        description: 'Run Phase 1: Deep Mining'
+        required: true
+        default: 'true'
+        type: boolean
+      run_phase2:
+        description: 'Run Phase 2: LLM Analysis'
+        required: true
+        default: 'true'
+        type: boolean
+      sample_size:
+        description: 'LLM Analysis Sample Size (per task)'
+        required: false
+        default: '20'
+        type: string
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Unzip Data
+      run: |
+        if [ -f X_followers.zip ]; then unzip -o X_followers.zip; fi
+        if [ -f X_replies.zip ]; then unzip -o X_replies.zip; fi
+        ls -F
+
+    - name: Phase 1 - Deep Mining
+      if: ${{ inputs.run_phase1 == true }}
+      run: |
+        echo "Running Phase 1: Deep Mining..."
+        python deep_mining.py
+
+    - name: Phase 2 - LLM Analysis
+      if: ${{ inputs.run_phase2 == true }}
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        # Optional: Add other secrets if needed, e.g., OPENAI_BASE_URL
+        # Using defaults from config.py if not set, but usually API key is secret
+      run: |
+        echo "Running Phase 2: LLM Analysis..."
+        # Note: deep_analysis_llm.py uses config.py which reads env vars
+        # Make sure to set OPENAI_API_KEY in GitHub Secrets
+        python deep_analysis_llm.py
+      continue-on-error: true
+
+    - name: Archive Analysis Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: analysis-results
+        path: output/
+
+    - name: Commit Results to Repo
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+
+        # Create output directory if it doesn't exist (though scripts should create it)
+        mkdir -p output
+
+        # Add output files
+        git add output/
+
+        # Commit if there are changes
+        git commit -m "Update analysis results [skip ci]" || echo "No changes to commit"
+
+        # Push changes
+        git push
