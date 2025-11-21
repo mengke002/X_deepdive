@@ -3,195 +3,119 @@
 ## 1. 项目概述
 
 ### 1.1. 核心目标
-本项目旨在对一个特定的X（原Twitter）影响力用户群落进行深度数据挖掘与分析，最终将洞察转化为**可执行、个性化的社交账户增长策略**。我们将采用一种“漏斗式”分析架构，结合大规模统计挖掘与精准的LLM（大型语言模型）定性推理，实现从**理解生态（What）**、**洞察规律（Why）**到**指导实践（How）**的全流程闭环。
+本项目旨在对一个特定的X（原Twitter）影响力用户群落进行深度数据挖掘与分析，最终将洞察转化为**可执行、个性化的社交账户增长策略**。项目采用“漏斗式”分析架构，结合**Python 广域挖掘**与**LLM 深度推理**，实现全流程闭环。
 
-### 1.2. 核心分析架构：漏斗式挖掘 (The Funnel Architecture)
-为了平衡分析的深度、效率与成本，我们摒弃单一的分析模式，采用两阶段的漏斗式架构：
+### 1.2. 核心分析架构
+为了平衡分析的深度、效率与成本，我们采用两阶段架构：
 
-1.  **阶段一：广域统计与算法挖掘 (The "What" - Broad & Fast)**
-    *   **工具**: Python (Pandas, NetworkX, Scikit-learn)。
-    *   **特点**: **零Token消耗，速度快，覆盖全量数据**。
-    *   **目标**: 充分利用每一个结构化数据字段（如时间、来源、互动指标、媒体类型），通过数学和算法规则，大规模地发现网络结构、行为模式、内容规律、潜在新星和异常信号。
-    *   **产出**: 结构化的特征数据表 (`Feature Tables`) 和一系列高度精炼、有待深度分析的**候选清单 (`Candidate Lists`)**。
+1.  **阶段一：广域统计与算法挖掘 (Deep Mining)**
+    *   **工具**: `deep_mining.py` (基于 Python, NetworkX, Louvain)。
+    *   **目标**: 全量处理数据，构建网络，计算影响力，挖掘行为模式与内容基因。
+    *   **产出**: 完整的用户清单、网络图谱、统计报告。
 
-2.  **阶段二：LLM驱动的定性增强 (The "Why" & "How" - Deep & Focused)**
-    *   **工具**: 大型语言模型 (LLM) API。
-    *   **特点**: **高价值、高成本，精准定点分析**。
-    *   **目标**: 仅针对阶段一筛选出的“Top N”候选清单（如最有价值的帖子、最关键的人物、最核心的互动关系），进行深度的归因、推理和策略生成。
-    *   **产出**: 可直接理解和执行的**内容创作模板、用户互动策略和增长行动指南**。
-
-### 1.3. 数据源概览与关键解析
-
-#### 1.3.1. 数据源概览
-数据文件命名规则：所有数据文件均以 `twitterExport_{X_ID}_{DataType}.csv` 格式命名，其中 `{X_ID}` 代表数据所属的Twitter（X）用户ID，`{DataType}` 指明数据类型（如 `Following` 表示关注数据，`Replies` 表示回复数据）。
-
-1.  **用户关注数据 (`X_followers/`)**: 存储了特定核心用户所关注的账号列表及其详细Profile（`Bio`, `Followers Count`, `Created At`, `Professional`, `Website`等）。这些数据用于构建静态网络和分析用户背景。
-    *   **示例文件名**: `twitterExport_manateelazycat_Following.csv`，表示用户 `manateelazycat` 关注的用户数据。
-2.  **用户回复数据 (`X_replies/`)**: 包含了特定核心用户的近期回复、互动指标（`View Count`, `Reply Count`等）及内容元数据（`Source`, `media_type`等）。这些数据用于构建动态网络和分析内容与行为。
-    *   **示例文件名**: `TwExport_manateelazycat_Replies.csv`，表示用户 `manateelazycat` 的回复数据。
-
-**重要说明：** 每个数据文件都以单个核心用户为中心。但在构建完整的社交网络图谱时，分析脚本需要遍历并整合 `X_followers/` 和 `X_replies/` 目录下的**所有**相关文件，以确保覆盖分析群落中的全部用户及其关系，从而构建一个全面、无遗漏的网络视图。
-
-#### 1.3.2. 关键洞察：解析`X_replies`数据结构以实现精确关系挖掘
-
-在分析`X_replies`数据时，一个常见的误区是试图通过正则表达式从回复的`Text`字段中提取`@username`来确定回复对象。**这是一个严重错误的方法**，因为用户可以编辑回复中的`@`提及，甚至完全删除它，导致关系识别不准确。
-
-正确的、可靠的方法根植于采集数据的结构本身。
-
-**核心原理：数据是按“对话流”组织的**
-
-`X_replies`目录下的每个CSV文件都是从特定用户的“回复”页面按时间顺序从上到下采集的。这个页面不仅包含该用户的回复，还为了提供上下文，包含了被回复的原始推文。这使得整个CSV文件呈现为一种**扁平化的对话线程**。
-
-**准确识别回复关系的基本规则：**
-
-1.  在CSV文件中，当您定位到一行`Type`为`Reply`的记录时，它代表一个回复动作。
-2.  **该回复所指向的目标推文，就是它在文件中的紧邻的上一行记录。**
-3.  因此，被回复用户的唯一身份标识（`Username`），就是**上一行记录**的`Author Username`字段的值。
-
-**实例解析：**
-
-假设在`TwExport_Bitturing_Replies.csv`中我们有如下数据：
-
-| Row | Type   | Author Username | Text                      |
-|:----|:-------|:----------------|:--------------------------|
-| 10  | Origin | `punk2898`      | RNM，Stable 这 SB 项目方... |
-| 11  | **Reply**  | **`Bitturing`**     | @punk2898 多少？100wu？   |
-
-- 第11行是`Bitturing`发起的一个回复。
-- 根据规则，它回复的是第10行的推文。
-- 第10行推文的作者是`punk2898`。
-- **结论：** 这是一次`Bitturing -> punk2898`的互动。我们应使用`punk2898`作为关系图中的目标节点。
-
-**挖掘动态过程：**
-
-这个“上一行规则”是重建整个动态对话链的基础。通过从上到下处理文件，我们可以精确地构建出谁在何时回复了谁，形成一个有向的互动序列（例如：A -> B -> C -> B），从而进行更深度的时序和行为分析。在后续的所有分析中，都必须遵循此规则来构建动态网络（`G_dynamic`）。
+2.  **阶段二：LLM驱动的定性增强 (LLM Deep Analysis)**
+    *   **工具**: `deep_analysis_llm.py` (基于 OpenAI Compatible API)。
+    *   **目标**: 对阶段一筛选出的“Top N”候选清单进行深度的归因、推理和策略生成。
+    *   **产出**: 爆款拆解、策略画像、关系内涵、内容机会库。
 
 ---
 
-## 2. 阶段一：广域统计与算法挖掘 (The "What")
+## 2. 项目结构与脚本说明
 
-此阶段利用Python脚本对全量数据进行处理，榨干每个字段的统计价值。
+```bash
+.
+├── macro_analysis.py         # [基础] 宏观网络构建与基础指标计算
+├── deep_mining.py            # [核心] 阶段一：深度挖掘、社群发现、行为/内容统计 (执行此脚本)
+├── deep_analysis_llm.py      # [核心] 阶段二：LLM 定性分析 (依赖阶段一产出)
+├── network_visualization.py  # [可视化] 生成交互式网络图
+├── llm_client.py             # LLM 客户端封装
+├── config.py                 # 配置管理
+├── prompts.py                # LLM 提示词库
+└── output/                   # 所有产出物目录
+```
 
-### 2.1. 网络拓扑与影响力分析 (Network & Influence)
+### 2.1. 运行指南
 
-**目标**: 描绘网络结构，识别关键角色。
+1.  **准备环境**:
+    ```bash
+    pip install -r requirements.txt
 
-*   **动作1：构建加权有向图**:
-    *   **静态图 (G_static)**: 基于 `X_followers/` 的关注关系。
-    *   **动态图 (G_dynamic)**: 基于 `X_replies/` 的回复关系，边权重由互动频率决定。
-    *   **组合图 (G_combined)**: 综合以上两者。
-*   **动作2：识别核心影响力节点**:
-    *   **全局权威 (Authorities)**: 使用 **PageRank** 算法，识别网络中最具权威性的“枢纽”人物。
-    *   **信息桥梁 (Connectors)**: 使用 **中介中心性 (Betweenness Centrality)**，识别连接不同社群、促进信息破圈的“关键连接者”。
-    *   **应用HITS算法**: 区分 **Hubs** (善于发现并传播优质信息的人) 和 **Authorities** (被Hubs大量引用的原创内容贡献者)。
-*   **动作3：挖掘核心关系结构**:
-    *   **互惠性分析 (Reciprocity)**: 在 `G_dynamic` 中，识别 A->B 且 B->A 的“双向奔赴”关系，这是构成核心小圈子的基石。输出“单相思”和“真朋友”关系列表。
-    *   **社群发现 (Community Detection)**: 应用 **Louvain** 算法对 `G_dynamic` 进行社区划分，识别网络中的“兴趣部落”，并为每个用户打上社群ID。
-    *   **同质性探测 (Homophily)**: 基于`Bio`中的关键词（通过TF-IDF提取）或`Location`，量化分析是否“人以群分”，即相似背景的人是否互动更紧密。
+    # 复制配置模板
+    cp config.example.ini config.ini
+    # 编辑 config.ini 填入 API Key
+    # 或者直接设置环境变量: export OPENAI_API_KEY="sk-..."
+    ```
 
-### 2.2. 用户行为指纹分析 (Behavioral Fingerprinting)
+2.  **执行阶段一 (Deep Mining)**:
+    ```bash
+    python3 deep_mining.py
+    ```
+    *   *功能*: 解压数据 -> 构建网络 -> 计算PageRank/Betweenness -> 社群发现 -> 行为扫描 -> 生成CSV清单。
 
-**目标**: 量化用户的行为模式与专业程度。
-
-*   **动作1：活跃节律分析**:
-    *   **产出**: `Hour-Weekday` **活跃热力图**。
-    *   **逻辑**: 解析所有推文和回复的 `Created At`，分析每个用户或整个社群的“生物钟”，识别“黄金发帖窗口”和“高频互动时段”。
-*   **动作2：专业度与工具分析**:
-    *   **产出**: **专业度指数 (Professionalism Index)**。
-    *   **逻辑**: 统计 `Source` 字段分布。`Typefully`/`Hypefury` 等专业工具用户标记为“专业创作者”；`Twitter Web App` 用户标记为“深度用户”；`iPhone`/`Android` 用户标记为“生活记录者”。
-*   **动作3：互动风格分析**:
-    *   **产出**: **互动/广播比率 (Talkativity Ratio)**。
-    *   **逻辑**: 计算 `Reply` vs `Origin` 推文的比例，识别用户是“内容广播台”（低互动）还是“社群粘合剂”（高互动）。
-*   **动作4：影响力增长分析**:
-    *   **产出**: **潜龙在渊指数 (Rising Star Velocity)**。
-    *   **逻辑**: 结合账号创建时间 `Created At` 和影响力指标（如PageRank或粉丝数），计算 `影响力分数 / 账号存在天数`。用于发现掌握当前平台版本的“崛起新星”。
-*   **动作5：回复时效性分析**:
-    *   **产出**: **回复延迟分布 (Reply Latency)**。
-    *   **逻辑**: 利用“上一行规则”，计算回复与其目标推文的时间差。识别“秒回党”（高在线率）和“深思熟虑党”（长周期回复）。
-
-### 2.3. 内容基因与效能解码 (Content DNA & Efficiency)
-
-**目标**: 解构什么类型的内容在目标社群中最有效。
-
-*   **动作1：内容价值度量**:
-    *   **产出**: **干货指数 (Utility Score)**。
-    *   **逻辑**: 计算 **收藏/点赞比 (Bookmark-to-Like Ratio)**。点赞（Favorite）代表情绪共鸣，而收藏（Bookmark）代表实用价值。高比率内容是需要重点研究的“干货”。
-*   **动作2：内容格式效能分析**:
-    *   **产出**: **格式胜率报告**。
-    *   **逻辑**: 按 `media_type` (photo, video, gif, none) 分组，计算各类内容的平均浏览、互动和干货指数，判断“纯文字”与“图文/视频”的效能差异。
-*   **动作3：流量漏斗与转化分析**:
-    *   **产出**: **内容效能矩阵**。
-    *   **逻辑**: 计算社群的内容转化率基准：`曝光->共鸣率 (Like/View)`，`曝光->传播率 (Retweet/View)`，`曝光->讨论率 (Reply/View)`。找出“高传播低共鸣”（可能为争议性话题）或“高共鸣低传播”（可能为圈内干货）的异常内容。
-*   **动作4. 外部导流行为分析**:
-    *   **产出**: “Builder” vs “Blogger” 清单。
-    *   **逻辑**: 检测 `Origin` 类型推文的 `urls` 字段，识别导流向个人产品、GitHub、Newsletter 的“建设者”。
-
-### 2.4. 阶段一产出：候选清单 (Candidate Lists)
-
-此阶段的最终交付物是一系列CSV文件，作为阶段二LLM分析的精确输入。
-
-1.  **`list_posts_outliers.csv`**: **异常价值帖子清单**
-    *   **筛选标准**: “干货指数”Top 50，或“浏览量”Top 50，或“讨论率”极高的帖子。
-2.  **`list_users_key_players.csv`**: **关键角色清单**
-    *   **筛选标准**: PageRank最高的“权威”，中介中心性最高的“破圈者”，以及“潜龙在渊指数”最高的“新星”。
-3.  **`list_interactions_strong_ties.csv`**: **强互惠关系对清单**
-    *   **筛选标准**: 互惠性得分最高的Top 100用户对及其互动记录。
-4.  **`list_content_opportunities.csv`**: **潜在内容机会清单**
-    *   **筛选标准**: 包含"?"且回复数为0、但提问者有一定影响力的帖子；或讨论激烈（高回复数）的帖子。
+3.  **执行阶段二 (LLM Analysis)**:
+    ```bash
+    python3 deep_analysis_llm.py
+    ```
+    *   *功能*: 读取阶段一生成的 CSV -> 并发调用 LLM -> 生成 JSON 洞察报告。
 
 ---
 
-## 3. 阶段二：LLM驱动的定性增强 (The "Why" & "How")
+## 3. 产出物清单 (Artifacts)
 
-此阶段将使用 `ANALYSIS_FRAMEWORK.md` 中定义的专业Prompt，对阶段一生成的候选清单进行精准、深度的定性分析。
+所有文件均位于 `output/` 目录下。
 
-### 3.1. 任务一：爆款内容逆向工程 (Viral Content Reverse-Engineering)
+### 3.1. 用户清单 (Watchlists)
+| 文件名 | 描述 | 筛选逻辑 |
+|:---|:---|:---|
+| `watchlist_authorities.csv` | **权威枢纽** | 按 PageRank 排序的全局影响者。 |
+| `watchlist_connectors.csv` | **破圈者** | 按 Betweenness Centrality 排序的跨圈桥梁。 |
+| `watchlist_rising_stars.csv` | **崛起新星** | 账号较新但影响力增长极快的用户。 |
+| `list_users_key_players.csv` | **关键角色(综合)** | 包含上述维度及高专业度、高干货贡献者的精选名单 (Phase 2 输入)。 |
+| `all_users_with_metrics.csv` | **全量用户画像** | 包含所有计算指标的完整用户表。 |
 
-*   **输入**: `list_posts_outliers.csv`
-*   **LLM Prompt**: 使用 **A.3 爆款内容解构 (Viral Content Deconstruction)** 提示词。
-*   **增强分析**: 在Prompt中注入阶段一的统计发现，例如：“*已知这条纯文本帖子的‘干货指数’排名前1%，浏览量超过了该用户平均视频帖子的10倍。请深度分析其文字结构、钩子和叙事方式，解释其成功原因。*”
-*   **产出**: `Content_Blueprints.json` - 包含开头钩子、正文结构、情绪基调等维度的结构化爆款案例库。
+### 3.2. 内容与行为分析 (Content & Behavior)
+| 文件名 | 描述 | 关键指标 |
+|:---|:---|:---|
+| `list_posts_outliers.csv` | **异常价值帖子** | 高干货指数(Bookmark/Like)、高流量或高争议的帖子。 |
+| `list_content_opportunities.csv` | **内容机会** | 无人回答的高价值提问、热门辩论话题。 |
+| `stats_activity_heatmap.csv` | **活跃节律报告** | 社区整体的 24小时活跃度分布。 |
+| `stats_content_efficiency.csv` | **内容效能报告** | 不同媒体类型(Text/Image/Video)的互动表现对比。 |
+| `stats_traffic_funnel.csv` | **流量漏斗报告** | View -> Like -> Reply 的全局转化率。 |
 
-### 3.2. 任务二：成功者策略画像 (User Strategy Profiling)
+### 3.3. 关系与互动 (Interactions)
+| 文件名 | 描述 |
+|:---|:---|
+| `list_interactions_strong_ties.csv` | **强互惠关系对** | 双向互动频繁的用户对及其互动样本。 |
 
-*   **输入**: `list_users_key_players.csv` (重点是“崛起新星”和高“专业度指数”的用户)
-*   **LLM Prompt**: 使用 **A.2 用户策略画像 (User Strategy Profiling)** 提示词。
-*   **增强分析**: 提供用户的行为数据作为上下文，例如：“*此用户账号创建仅90天，但PageRank已进入Top 10%。他的‘互动/广播比率’为0.8，主要使用Typefully发帖。请结合其Bio和近期言论，分析他的核心增长策略是什么？*”
-*   **产出**: `User_Strategy_Dossiers.json` - 对成功案例的深度剖析，包含其内容焦点、沟通风格、潜在目标和增长打法。
+### 3.4. LLM 深度洞察 (LLM Insights)
+位于 `output/llm_insights/` 目录：
+| 文件名 | 描述 |
+|:---|:---|
+| `Content_Blueprints.json` | **爆款拆解**：钩子类型、结构模式、情绪基调分析。 |
+| `User_Strategy_Dossiers.json` | **策略画像**：用户人设、沟通风格、潜在目标推断。 |
+| `Community_Insights.json` | **关系内涵**：互动背后的社交意图（请教、辩论、吹捧）。 |
+| `Content_Idea_Bank.json` | **灵感题库**：基于未满足需求生成的具体选题建议。 |
 
-### 3.3. 任务三：关系内涵与社群文化推理 (Relationship & Culture Inference)
-
-*   **输入**: `list_interactions_strong_ties.csv`
-*   **LLM Prompt**: 使用 **A.1 关系内涵推理 (Relationship Inference)** 提示词。
-*   **增强分析**: 让LLM分析“强互惠关系对”之间的全部互动，总结其关系本质（如“商业互吹”、“师徒请益”、“观点盟友”），并提取圈内的“黑话”或“梗”。
-*   **产出**: `Community_Insights.md` - 关于核心社群文化、沟通准则和关键关系的摘要。
-
-### 3.4. 任务四：高价值内容机会挖掘 (Content Opportunity Mining)
-
-*   **输入**: `list_content_opportunities.csv`
-*   **LLM Prompt**: 使用 **A.4 内容机会挖掘 (Content Opportunity Mining)** 提示词。
-*   **增强分析**: 专注于识别“被频繁问及但缺少优质答案”的问题和“讨论激烈但观点模糊”的核心争议。
-*   **产出**: `Content_Idea_Bank.json` - 一份包含“高价值问题”和“核心争议点”的内容选题库，可直接用于创作。
+### 3.5. 可视化
+| 文件名 | 描述 |
+|:---|:---|
+| `network_combined.graphml` | 完整的网络图文件 (可用 Gephi 打开)。 |
+| `network_data.json` | 适配 Web 展示的 JSON 数据。 |
 
 ---
 
-## 4. 最终交付物总览
+## 4. 详细分析维度说明
 
-1.  **一份深度分析报告 (.md/.pdf)**: 图文并茂，整合所有关键发现、可视化图表和最终的策略建议。
-2.  **一个交互式网络图 (HTML)**: 基于Pyvis或Plotly Dash，节点大小映射PageRank，颜色映射社群ID，点击可查看LLM生成的用户策略画像。
-3.  **一套可复用的分析脚本 (Python)**: 用于数据处理、特征工程、网络分析和候选清单生成。
-4.  **一系列结构化数据文件 (CSV/JSON)**:
-    *   所有阶段一产出的完整 `stats_*.csv` 和 `list_*.csv` 文件。
-    *   所有阶段二产出的 `*_Blueprints.json`, `*_Dossiers.json` 等LLM分析结果。
-5.  **一份创作者增长策略手册 (Markdown)**: 提炼所有可行动的建议，包含：
-    *   **三大核心清单**: 权威枢纽、破圈者、崛起新星。
-    *   **两大内容武器库**: 高价值问题库、核心争议库。
-    *   **一个爆款模版库**: 结构化的爆款帖子案例。
-    *   **一个AI辅助创作工作流**: 提供与分析结果相结合的LLM指令模板。
+### 4.1. 行为指纹 (Behavioral Fingerprinting)
+- **活跃节律**: 分析 `Created At` 字段，生成 `stats_activity_heatmap.csv`，指导最佳发帖时间。
+- **专业度指数**: 基于 `Source` (Typefully vs Web App) 识别专业创作者。
+- **互动/广播比**: 计算 Reply / Origin 推文比例，区分"广播台"与"社群粘合剂"。
+- **回复延迟**: 计算 Reply 与上一行 Target 的时间差，衡量用户活跃度。
 
-## 5. 实施计划
+### 4.2. 内容基因 (Content DNA)
+- **干货指数 (Utility Score)**: `Bookmark Count / Favorite Count`。收藏代表实用价值，点赞代表情绪共鸣。
+- **内容效能**: 统计不同 `media_type` 的转化率，生成 `stats_content_efficiency.csv`。
+- **流量漏斗**: 全局计算 `View -> Like` 和 `View -> Reply` 转化率，生成 `stats_traffic_funnel.csv`。
 
-1.  **Phase 1: 脚本开发与增强**: 升级Python脚本，实现阶段一描述的所有统计与网络分析功能。
-2.  **Phase 2: 批量数据挖掘**: 运行脚本，生成全套的统计数据和候选清单CSV文件。
-3.  **Phase 3: LLM精准增强**: 编写或手动执行调用LLM API的流程，处理候选清单，生成定性分析结果。
-4.  **Phase 4: 报告与策略合成**: 综合所有产出，撰写最终的分析报告和增长策略手册，并生成可视化图表。
+### 4.3. LLM 定性分析
+利用 GPT-4/Gemini 等模型，对筛选出的高价值数据进行文本层面的深度理解，提取结构化洞察（详见 `deep_analysis_llm.py` 和 `prompts.py`）。

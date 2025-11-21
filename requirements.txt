@@ -1,0 +1,7 @@
+networkx
+pandas
+python-louvain
+openai
+python-dotenv
+plotly
+scikit-learn

@@ -1,0 +1,8 @@
+X_followers/
+X_replies/
+__MACOSX/
+output/
+*.pyc
+__pycache__/
+.env
+config.ini
