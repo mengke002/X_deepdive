@@ -3,33 +3,30 @@
 """
 宏观层面分析脚本：洞察生态全貌与趋势
 构建社交网络图谱，识别核心节点，生成权威清单
+
+数据源：从 MySQL 数据库读取数据（通过 DATABASE_URL 或 DB_* 环境变量配置）
 """
 
 import pandas as pd
 import networkx as nx
 import numpy as np
 import os
-import glob
 import json
 from datetime import datetime
-from pathlib import Path
 import warnings
 from tqdm import tqdm
-from .utils import ensure_data_ready
+from .utils import is_using_database, ensure_output_dir
 
 warnings.filterwarnings('ignore')
 
 class MacroNetworkAnalyzer:
     """宏观社交网络分析器"""
 
-    def __init__(self, followers_dir='X_followers', replies_dir='X_replies',
-                 use_approximation=True, approximation_samples=None):
+    def __init__(self, use_approximation=True, approximation_samples=None):
         """
         初始化分析器
 
         Args:
-            followers_dir: 关注数据目录
-            replies_dir: 回复数据目录
             use_approximation: 是否使用近似算法计算中介中心性（大幅提速）
             approximation_samples: 近似算法采样数量。None时自动调整：
                 - 'low': 500个节点（快速，适合初步探索）
@@ -39,11 +36,23 @@ class MacroNetworkAnalyzer:
                 - 整数: 自定义采样数量
                 - None: 自动选择（根据网络规模智能调整）
         """
-        # 确保数据就绪（自动解压）
-        ensure_data_ready(followers_dir, replies_dir)
+        print("=" * 60)
+        print("使用数据库作为数据源")
+        print("=" * 60)
+        
+        from .db_adapter import get_db_adapter
+        self.db_adapter = get_db_adapter()
+        if not self.db_adapter:
+            raise RuntimeError("数据库连接失败，请检查 DATABASE_URL 或 DB_* 环境变量配置")
+        
+        # 打印数据库统计信息
+        stats = self.db_adapter.get_stats()
+        print(f"数据库统计:")
+        print(f"  - 用户数: {stats['users_count']}")
+        print(f"  - 推文数: {stats['posts_count']}")
+        print(f"  - 关注关系数: {stats['followings_count']}")
+        print(f"  - 回复数: {stats['replies_count']}")
 
-        self.followers_dir = followers_dir
-        self.replies_dir = replies_dir
         self.use_approximation = use_approximation
         self.approximation_samples = approximation_samples
         self.G_static = nx.DiGraph()  # 静态关注网络
@@ -53,15 +62,13 @@ class MacroNetworkAnalyzer:
         self.core_users = set()  # 核心用户集合
 
     def load_all_data(self):
-        """加载所有数据文件"""
+        """加载所有数据"""
         print("=" * 60)
         print("开始加载数据...")
         print("=" * 60)
 
-        # 加载关注数据
+        # 从数据库加载数据
         self._load_followers_data()
-
-        # 加载回复数据
         self._load_replies_data()
 
         print(f"\n数据加载完成:")
@@ -73,127 +80,76 @@ class MacroNetworkAnalyzer:
         print(f"  - 动态网络边数: {self.G_dynamic.number_of_edges()}")
 
     def _load_followers_data(self):
-        """加载所有关注数据（优化版：批量添加边）"""
-        print("\n[1/2] 加载关注数据...")
-
-        follower_files = glob.glob(f"{self.followers_dir}/twitterExport_*_Following.csv")
-        print(f"找到 {len(follower_files)} 个关注数据文件")
-
-        all_edges = []  # 批量收集所有边
-
-        for file_path in tqdm(follower_files, desc="  加载关注数据"):
-            # 从文件名提取核心用户ID
-            filename = os.path.basename(file_path)
-            core_user = filename.replace('twitterExport_', '').replace('_Following.csv', '')
-            self.core_users.add(core_user)
-
-            try:
-                # 读取CSV文件
-                df = pd.read_csv(file_path, encoding='utf-8-sig')
-
-                # 清理列名
-                df.columns = df.columns.str.strip()
-
-                # 批量创建边列表 (core_user -> followed_user)
-                edges = [(core_user, row['Username']) for _, row in df.iterrows()]
-                all_edges.extend(edges)
-
-                # 批量保存用户画像信息（向量化处理）
-                for _, row in df.iterrows():
-                    followed_user = row['Username']
-                    if followed_user not in self.users_profile:
-                        self.users_profile[followed_user] = {
-                            'user_id': str(row.get('User ID', '')),
-                            'name': row.get('Name', ''),
-                            'username': followed_user,
-                            'bio': row.get('Bio', ''),
-                            'followers_count': int(row.get('Followers Count', 0)) if pd.notna(row.get('Followers Count')) else 0,
-                            'following_count': int(row.get('Following Count', 0)) if pd.notna(row.get('Following Count')) else 0,
-                            'tweets_count': int(row.get('Tweets Count', 0)) if pd.notna(row.get('Tweets Count')) else 0,
-                            'verified': row.get('Verified', 'false') == 'true',
-                            'verified_type': row.get('Verified Type', ''),
-                            'created_at': row.get('Created At', ''),
-                            'location': row.get('Location', ''),
-                            'website': row.get('Website', ''),
-                            'professional': row.get('Professional', ''),
-                        }
-
-            except Exception as e:
-                print(f"  警告: 加载文件 {filename} 时出错: {e}")
-                continue
-
-        # 批量添加所有边到图中（大幅提速）
+        """从数据库加载所有关注数据"""
+        print("\n[1/2] 从数据库加载关注数据...")
+        
+        # 获取核心用户
+        self.core_users = self.db_adapter.get_core_users()
+        
+        # 获取所有关注关系
+        followings_data = self.db_adapter.get_followings()
+        print(f"获取到 {len(followings_data)} 个用户的关注列表")
+        
+        all_edges = []
+        
+        for core_user, df in tqdm(followings_data, desc="  处理关注数据"):
+            # 批量创建边列表 (core_user -> followed_user)
+            edges = [(core_user, row['Username']) for _, row in df.iterrows()]
+            all_edges.extend(edges)
+            
+            # 批量保存用户画像信息
+            for _, row in df.iterrows():
+                followed_user = row['Username']
+                if followed_user not in self.users_profile:
+                    self.users_profile[followed_user] = {
+                        'user_id': str(row.get('User ID', '')),
+                        'name': row.get('Name', ''),
+                        'username': followed_user,
+                        'bio': row.get('Bio', ''),
+                        'followers_count': int(row.get('Followers Count', 0)) if pd.notna(row.get('Followers Count')) else 0,
+                        'following_count': int(row.get('Following Count', 0)) if pd.notna(row.get('Following Count')) else 0,
+                        'tweets_count': int(row.get('Tweets Count', 0)) if pd.notna(row.get('Tweets Count')) else 0,
+                        'verified': row.get('Verified', False) == True or row.get('Verified', 'false') == 'true',
+                        'verified_type': row.get('Verified Type', ''),
+                        'created_at': row.get('Created At', ''),
+                        'location': row.get('Location', ''),
+                        'website': row.get('Website', ''),
+                        'professional': row.get('Professional', ''),
+                    }
+        
+        # 批量添加所有边到图中
         self.G_static.add_edges_from(all_edges)
         print(f"  完成: 已批量添加 {len(all_edges)} 条关注关系")
 
     def _load_replies_data(self):
         """
-        加载所有回复数据，使用"上一行规则"构建精确的互动网络（优化版）
-
-        核心原理：
-        X_replies CSV文件是按对话流组织的。当一行的Type为"Reply"时，
-        它回复的目标就是它的上一行记录的作者。
+        从数据库加载所有回复数据，利用 in_reply_to_tweet_id 构建精确的互动网络
+        
+        核心优势：
+        数据库中已有 in_reply_to_tweet_id 字段，无需使用"上一行规则"，
+        可以直接获取精确的回复关系。
         """
-        print("\n[2/2] 加载回复数据...")
-
-        reply_files = glob.glob(f"{self.replies_dir}/TwExport_*_Replies.csv")
-        print(f"找到 {len(reply_files)} 个回复数据文件")
-
-        total_replies_processed = 0
-        edge_weights = {}  # 使用字典累积边的权重，最后批量添加
-
-        for file_path in tqdm(reply_files, desc="  加载回复数据"):
-            # 从文件名提取核心用户ID
-            filename = os.path.basename(file_path)
-            core_user = filename.replace('TwExport_', '').replace('_Replies.csv', '')
-            self.core_users.add(core_user)
-
-            try:
-                # 读取CSV文件
-                df = pd.read_csv(file_path, encoding='utf-8-sig')
-
-                # 清理列名
-                df.columns = df.columns.str.strip()
-
-                if len(df) == 0:
-                    continue
-
-                # 使用shift(1)创建上一行的作者列，这是回复的目标用户
-                df['target_user'] = df['Author Username'].shift(1)
-
-                # 向量化计算互动权重（不再使用iterrows）
-                df['interaction_weight'] = (
-                    df['View Count'].fillna(0) * 0.01 +      # 浏览量权重降低
-                    df['Reply Count'].fillna(0) * 3.0 +      # 回复数权重较高
-                    df['Retweet Count'].fillna(0) * 4.0 +    # 转发权重最高
-                    df['Favorite Count'].fillna(0) * 2.0     # 点赞权重中等
-                )
-
-                # 筛选出所有Type为Reply的真实回复
-                replies_df = df[
-                    (df['Type'] == 'Reply') &
-                    (df['target_user'].notna()) &
-                    (df['Author Username'].notna())
-                ].copy()
-
-                # 过滤掉自己回复自己的情况
-                replies_df = replies_df[replies_df['Author Username'] != replies_df['target_user']]
-
-                total_replies_processed += len(replies_df)
-
-                # 批量累积边的权重
-                for _, row in replies_df.iterrows():
-                    edge = (row['Author Username'], row['target_user'])
-                    edge_weights[edge] = edge_weights.get(edge, 0) + row['interaction_weight']
-
-            except Exception as e:
-                print(f"  警告: 加载文件 {filename} 时出错: {e}")
-                continue
-
+        print("\n[2/2] 从数据库加载回复数据...")
+        
+        # 直接获取回复关系
+        reply_df = self.db_adapter.get_reply_relationships()
+        
+        if reply_df.empty:
+            print("  警告: 未找到任何回复关系数据")
+            return
+        
+        total_replies_processed = len(reply_df)
+        edge_weights = {}
+        
+        # 聚合边权重
+        for _, row in tqdm(reply_df.iterrows(), total=len(reply_df), desc="  处理回复关系"):
+            edge = (row['source_user'], row['target_user'])
+            edge_weights[edge] = edge_weights.get(edge, 0) + row['weight']
+        
         # 批量添加所有边到动态图中
         weighted_edges = [(u, v, {'weight': w}) for (u, v), w in edge_weights.items()]
         self.G_dynamic.add_edges_from(weighted_edges)
-
+        
         print(f"  完成: 处理了 {total_replies_processed} 条回复，添加了 {len(weighted_edges)} 条互动关系边")
 
     def build_combined_network(self):

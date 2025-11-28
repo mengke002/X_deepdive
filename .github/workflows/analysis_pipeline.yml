@@ -18,6 +18,14 @@ on:
         required: false
         default: '20'
         type: string
+      data_source:
+        description: 'Data Source (database or file)'
+        required: false
+        default: 'database'
+        type: choice
+        options:
+          - database
+          - file
 
 jobs:
   analysis:
@@ -42,16 +50,26 @@ jobs:
 
     - name: Phase 1 - Deep Mining
       if: ${{ inputs.run_phase1 == true }}
+      env:
+        # 数据库配置 (用于数据库模式)
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # 数据源选择
+        DATA_SOURCE: ${{ inputs.data_source }}
       run: |
         echo "Running Phase 1: Deep Mining..."
+        echo "Data Source: $DATA_SOURCE"
         python -m src.deep_mining
 
     - name: Phase 2 - LLM Analysis
       if: ${{ inputs.run_phase2 == true }}
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        # Optional: Add other secrets if needed, e.g., OPENAI_BASE_URL
-        # Using defaults from config.py if not set, but usually API key is secret
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        LLM_FAST_MODELS: ${{ secrets.LLM_FAST_MODELS }}
+        LLM_DEEP_MODELS: ${{ secrets.LLM_DEEP_MODELS }}
+        # 数据库配置 (用于数据库模式，某些分析可能需要访问原始数据)
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        DATA_SOURCE: ${{ inputs.data_source }}
       run: |
         echo "Running Phase 2: LLM Analysis..."
         # Note: deep_analysis_llm.py uses config.py which reads env vars

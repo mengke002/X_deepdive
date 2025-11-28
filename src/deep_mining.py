@@ -3,6 +3,8 @@
 """
 深度挖掘脚本 (Phase 1 Completion)
 继承自 MacroNetworkAnalyzer，补充社群发现、行为指纹分析和内容效能解码。
+
+数据源：从 MySQL 数据库读取数据（通过 DATABASE_URL 或 DB_* 环境变量配置）
 """
 
 import pandas as pd
@@ -10,7 +12,6 @@ import networkx as nx
 import community.community_louvain as community_louvain
 import numpy as np
 import os
-import glob
 import json
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
@@ -23,8 +24,8 @@ from .macro_analysis import MacroNetworkAnalyzer
 warnings.filterwarnings('ignore')
 
 class DeepMiner(MacroNetworkAnalyzer):
-    def __init__(self, followers_dir='X_followers', replies_dir='X_replies', output_dir='output'):
-        super().__init__(followers_dir, replies_dir)
+    def __init__(self, output_dir='output'):
+        super().__init__()
         self.output_dir = output_dir
         self.community_map = {}
         self.behavior_stats = defaultdict(lambda: {
@@ -140,117 +141,113 @@ class DeepMiner(MacroNetworkAnalyzer):
         print(f"  ✓ 发现 {num_communities} 个社群")
 
     def _scan_behavior_and_content(self):
-        """扫描回复文件，提取行为指纹和内容指标"""
+        """扫描推文数据，提取行为指纹和内容指标"""
         print("\n[Deep Mining] 扫描行为指纹与内容基因...")
+        self._scan_behavior_and_content_from_db()
 
-        reply_files = glob.glob(f"{self.replies_dir}/TwExport_*_Replies.csv")
-
-        for file_path in tqdm(reply_files, desc="  深度扫描文件"):
-            try:
-                df = pd.read_csv(file_path, encoding='utf-8-sig')
-                df.columns = df.columns.str.strip()
-
-                # 转换时间
-                df['Created At'] = pd.to_datetime(df['Created At'], errors='coerce')
-
-                # 上一行规则辅助列
-                df['prev_author'] = df['Author Username'].shift(1)
-                df['prev_created_at'] = df['Created At'].shift(1)
-                df['prev_text'] = df['Text'].shift(1) # 用于上下文
-
-                for i, row in df.iterrows():
-                    user = row['Author Username']
-                    if pd.isna(user): continue
-
-                    # --- 行为统计 ---
-
-                    # 1. 活跃节律 (Hour)
-                    if pd.notna(row['Created At']):
-                        hour = row['Created At'].hour
-                        self.behavior_stats[user]['active_hours'][hour] += 1
-
-                    # 2. 专业度 (Source)
-                    if pd.notna(row['Source']):
-                        self.behavior_stats[user]['sources'][row['Source']] += 1
-
-                    # 3. 互动类型 (Reply vs Origin)
-                    # 注意：CSV中 Type='Reply' 表示这是回复，Type='Origin' 表示这是原创
-                    # 但有时 Reply 也是 Origin (Thread)，这里按 Type 字段判断
-                    t_type = row['Type']
-                    if t_type == 'Reply':
-                        self.behavior_stats[user]['reply_count'] += 1
-
-                        # 4. 回复延迟 (Latency) - 仅对 Reply 有效
-                        # 规则：当前行是 Reply，上一行是 Target
-                        target_user = row['prev_author']
-                        if pd.notna(target_user) and pd.notna(row['Created At']) and pd.notna(row['prev_created_at']):
-                            # 确保不是自言自语 (Thread)
-                            if user != target_user:
-                                latency = (row['Created At'] - row['prev_created_at']).total_seconds()
-                                if latency > 0:
-                                    self.behavior_stats[user]['latencies'].append(latency)
-
-                                # 记录互动对用于互惠性分析
-                                # (Source, Target, Type, Timestamp, Text)
-                                self.interaction_pairs.append({
-                                    'source': user,
-                                    'target': target_user,
-                                    'timestamp': row['Created At'],
-                                    'text': row['Text']
-                                })
-
-                    elif t_type == 'Origin':
-                        self.behavior_stats[user]['origin_count'] += 1
-                    elif t_type == 'Retweet':
-                        self.behavior_stats[user]['retweet_count'] += 1
-
-                    # --- 内容统计 (针对该推文本身的数据) ---
-                    # 我们关心的是这条推文的表现
-                    view_count = float(row.get('View Count', 0)) if pd.notna(row.get('View Count')) else 0
-                    like_count = float(row.get('Favorite Count', 0)) if pd.notna(row.get('Favorite Count')) else 0
-                    bookmark_count = float(row.get('Bookmark Count', 0)) if pd.notna(row.get('Bookmark Count')) else 0
-                    reply_count = float(row.get('Reply Count', 0)) if pd.notna(row.get('Reply Count')) else 0
-                    retweet_count = float(row.get('Retweet Count', 0)) if pd.notna(row.get('Retweet Count')) else 0
-
-                    media_type = row.get('media_type', 'none')
-                    if pd.isna(media_type): media_type = 'none'
-
-                    self.behavior_stats[user]['media_types'][media_type] += 1
-                    self.behavior_stats[user]['total_views'] += view_count
-                    self.behavior_stats[user]['total_likes'] += like_count
-                    self.behavior_stats[user]['total_bookmarks'] += bookmark_count
-                    self.behavior_stats[user]['total_replies_received'] += reply_count
-                    self.behavior_stats[user]['total_retweets_received'] += retweet_count
-
-                    # 收集每一条帖子用于 "list_posts_outliers" 和 "content_opportunities"
-                    # 计算 Utility Score (Bookmark / Like)
-                    utility_score = 0
-                    if like_count > 0:
-                        utility_score = bookmark_count / like_count
-
-                    # 内容机会：是问句吗？
-                    text = str(row.get('Text', ''))
-                    is_question = '?' in text or '？' in text
-
-                    self.content_stats.append({
-                        'id': row.get('ID', ''), # 假设有ID列，如果没有可能需要用索引
-                        'author': user,
-                        'text': text,
-                        'created_at': row.get('Created At'),
-                        'type': t_type,
-                        'media_type': media_type,
-                        'view_count': view_count,
-                        'like_count': like_count,
-                        'bookmark_count': bookmark_count,
-                        'reply_count': reply_count, # 这条帖子收到的回复数
-                        'utility_score': utility_score,
-                        'is_question': is_question,
-                        'source': row.get('Source', '')
-                    })
-
-            except Exception as e:
-                # print(f"  Error scanning {file_path}: {e}")
-                pass
+    def _scan_behavior_and_content_from_db(self):
+        """从数据库扫描行为指纹和内容指标"""
+        # 获取所有推文数据
+        df = self.db_adapter.get_all_posts()
+        
+        if df.empty:
+            print("  警告: 未找到任何推文数据")
+            return
+        
+        # 转换时间
+        df['Created At'] = pd.to_datetime(df['Created At'], errors='coerce')
+        
+        # 获取回复关系用于延迟计算
+        reply_df = self.db_adapter.get_reply_relationships()
+        
+        # 构建 tweet_id -> published_at 的映射
+        tweet_time_map = df.set_index('ID')['Created At'].to_dict()
+        
+        print(f"  处理 {len(df)} 条推文...")
+        
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="  深度扫描推文"):
+            user = row['Author Username']
+            if pd.isna(user):
+                continue
+            
+            # --- 行为统计 ---
+            
+            # 1. 活跃节律 (Hour)
+            if pd.notna(row['Created At']):
+                hour = row['Created At'].hour
+                self.behavior_stats[user]['active_hours'][hour] += 1
+            
+            # 2. 专业度 (Source)
+            if pd.notna(row.get('Source')):
+                self.behavior_stats[user]['sources'][row['Source']] += 1
+            
+            # 3. 互动类型 (Reply vs Origin)
+            t_type = row['Type']
+            if t_type == 'Reply':
+                self.behavior_stats[user]['reply_count'] += 1
+            elif t_type == 'Origin':
+                self.behavior_stats[user]['origin_count'] += 1
+            elif t_type == 'Retweet':
+                self.behavior_stats[user]['retweet_count'] += 1
+            
+            # --- 内容统计 ---
+            view_count = float(row.get('View Count', 0)) if pd.notna(row.get('View Count')) else 0
+            like_count = float(row.get('Favorite Count', 0)) if pd.notna(row.get('Favorite Count')) else 0
+            bookmark_count = float(row.get('Bookmark Count', 0)) if pd.notna(row.get('Bookmark Count')) else 0
+            reply_count = float(row.get('Reply Count', 0)) if pd.notna(row.get('Reply Count')) else 0
+            retweet_count = float(row.get('Retweet Count', 0)) if pd.notna(row.get('Retweet Count')) else 0
+            
+            media_type = row.get('media_type', 'none')
+            if pd.isna(media_type):
+                media_type = 'none'
+            
+            self.behavior_stats[user]['media_types'][media_type] += 1
+            self.behavior_stats[user]['total_views'] += view_count
+            self.behavior_stats[user]['total_likes'] += like_count
+            self.behavior_stats[user]['total_bookmarks'] += bookmark_count
+            self.behavior_stats[user]['total_replies_received'] += reply_count
+            self.behavior_stats[user]['total_retweets_received'] += retweet_count
+            
+            # 计算 Utility Score
+            utility_score = 0
+            if like_count > 0:
+                utility_score = bookmark_count / like_count
+            
+            # 内容机会：是问句吗？
+            text = str(row.get('Text', ''))
+            is_question = '?' in text or '？' in text
+            
+            self.content_stats.append({
+                'id': row.get('ID', ''),
+                'author': user,
+                'text': text,
+                'created_at': row.get('Created At'),
+                'type': t_type,
+                'media_type': media_type,
+                'view_count': view_count,
+                'like_count': like_count,
+                'bookmark_count': bookmark_count,
+                'reply_count': reply_count,
+                'retweet_count': retweet_count,
+                'utility_score': utility_score,
+                'is_question': is_question,
+                'source': row.get('Source', '')
+            })
+        
+        # 处理回复延迟和互动对
+        if not reply_df.empty:
+            print(f"  处理 {len(reply_df)} 条回复关系...")
+            for _, row in tqdm(reply_df.iterrows(), total=len(reply_df), desc="  分析互动关系"):
+                source_user = row['source_user']
+                target_user = row['target_user']
+                
+                # 记录互动对用于互惠性分析
+                self.interaction_pairs.append({
+                    'source': source_user,
+                    'target': target_user,
+                    'timestamp': row['timestamp'],
+                    'text': row['text']
+                })
 
     def _calculate_advanced_metrics(self):
         """计算高级指标并更新 users_profile"""

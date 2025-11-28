@@ -1,54 +1,58 @@
 """
-Utility module for data management and file handling.
+工具模块 - 提供通用工具函数
 """
 import os
-import zipfile
 import logging
+from typing import Optional
+
+from .config import config, DATA_SOURCE_DATABASE
 
 logger = logging.getLogger(__name__)
 
-def ensure_data_ready(followers_dir='X_followers', replies_dir='X_replies'):
-    """
-    Ensure data directories exist. If not, try to unzip from archive files in the project root.
 
+def get_data_source() -> str:
+    """
+    获取当前数据源类型（仅支持数据库模式）
+    
+    Returns:
+        'database'
+    """
+    return config.get_data_source()
+
+
+def is_using_database() -> bool:
+    """检查是否使用数据库作为数据源（始终返回True）"""
+    return True
+
+
+def ensure_output_dir(output_dir: str = 'output') -> str:
+    """
+    确保输出目录存在
+    
     Args:
-        followers_dir (str): Directory name for followers data.
-        replies_dir (str): Directory name for replies data.
+        output_dir: 输出目录路径
+    
+    Returns:
+        输出目录的绝对路径
     """
-    root_dir = os.getcwd() # Assuming script is run from root
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        logger.info(f"创建输出目录: {output_dir}")
+    return os.path.abspath(output_dir)
 
-    # Define expected zip paths
-    followers_zip = os.path.join(root_dir, f"{followers_dir}.zip")
-    replies_zip = os.path.join(root_dir, f"{replies_dir}.zip")
 
-    # Check and extract Followers
-    if not os.path.exists(followers_dir):
-        logger.info(f"Directory '{followers_dir}' not found. Checking for zip...")
-        if os.path.exists(followers_zip):
-            logger.info(f"Extracting {followers_zip}...")
-            try:
-                with zipfile.ZipFile(followers_zip, 'r') as zip_ref:
-                    zip_ref.extractall(root_dir)
-                logger.info(f"Successfully extracted to {followers_dir}/")
-            except Exception as e:
-                logger.error(f"Failed to extract {followers_zip}: {e}")
-        else:
-            logger.warning(f"Neither directory '{followers_dir}' nor zip file found.")
-    else:
-        logger.info(f"Directory '{followers_dir}' exists.")
-
-    # Check and extract Replies
-    if not os.path.exists(replies_dir):
-        logger.info(f"Directory '{replies_dir}' not found. Checking for zip...")
-        if os.path.exists(replies_zip):
-            logger.info(f"Extracting {replies_zip}...")
-            try:
-                with zipfile.ZipFile(replies_zip, 'r') as zip_ref:
-                    zip_ref.extractall(root_dir)
-                logger.info(f"Successfully extracted to {replies_dir}/")
-            except Exception as e:
-                logger.error(f"Failed to extract {replies_zip}: {e}")
-        else:
-            logger.warning(f"Neither directory '{replies_dir}' nor zip file found.")
-    else:
-        logger.info(f"Directory '{replies_dir}' exists.")
+def format_number(num: int) -> str:
+    """
+    格式化数字显示（K/M格式）
+    
+    Args:
+        num: 要格式化的数字
+    
+    Returns:
+        格式化后的字符串
+    """
+    if num >= 1_000_000:
+        return f"{num/1_000_000:.1f}M"
+    elif num >= 1_000:
+        return f"{num/1_000:.1f}K"
+    return str(num)

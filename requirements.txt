@@ -5,3 +5,5 @@ openai
 python-dotenv
 plotly
 scikit-learn
+pymysql
+tqdm

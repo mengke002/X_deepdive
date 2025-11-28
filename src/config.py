@@ -1,14 +1,23 @@
 """
 配置管理模块
 支持环境变量 > config.ini > 默认值的优先级机制
+
+环境变量说明：
+- DATABASE_URL：数据源数据库连接字符串（必需）
+- ANALYSIS_DATABASE_URL：分析结果存储数据库连接字符串（可选）
 """
 import os
 import configparser
 import logging
-from typing import Dict, Any, List
+import re
+from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+# 数据源类型常量（仅支持数据库模式）
+DATA_SOURCE_DATABASE = 'database'
 
 
 class Config:
@@ -103,6 +112,86 @@ class Config:
             'deep_models': deep_models,
             'max_tokens': self._get_config_value('llm', 'max_tokens', 'LLM_MAX_TOKENS', 20000, int),
         }
+
+    def get_data_source(self) -> str:
+        """
+        获取数据源类型（仅支持数据库模式）
+        
+        必须配置 DATABASE_URL 或 DB_HOST 环境变量
+        """
+        # 检测数据库配置是否存在
+        db_url = os.getenv('DATABASE_URL')
+        db_host = os.getenv('DB_HOST')
+        
+        if not db_url and not db_host:
+            raise ValueError("必须配置 DATABASE_URL 或 DB_HOST 环境变量，本系统仅支持数据库模式")
+        
+        logger.info("使用数据库作为数据源")
+        return DATA_SOURCE_DATABASE
+    
+    def get_database_config(self) -> Optional[Dict[str, Any]]:
+        """获取数据源数据库配置"""
+        db_uri = os.getenv('DATABASE_URL')
+        
+        if db_uri:
+            config = self._parse_database_url(db_uri)
+            if config:
+                return config
+        
+        # 从单独的环境变量读取
+        db_host = os.getenv('DB_HOST')
+        if not db_host:
+            return None
+            
+        config = {
+            'host': db_host,
+            'port': int(os.getenv('DB_PORT', '3306')),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'database': os.getenv('DB_NAME', 'twitter'),
+            'charset': 'utf8mb4',
+            'autocommit': True,
+        }
+        
+        if os.getenv('DB_SSL', 'false').lower() == 'true':
+            config['ssl'] = {'ssl_mode': 'REQUIRED'}
+        
+        return config
+    
+    def _parse_database_url(self, db_uri: str) -> Optional[Dict[str, Any]]:
+        """解析数据库连接字符串"""
+        pattern = r'mysql://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)(\?.*)?'
+        match = re.match(pattern, db_uri)
+        if match:
+            user, password, host, port, database, params = match.groups()
+            config = {
+                'host': host,
+                'port': int(port),
+                'user': user,
+                'password': password,
+                'database': database,
+                'charset': 'utf8mb4',
+                'autocommit': True,
+            }
+            
+            if params and 'ssl-mode=REQUIRED' in params:
+                config['ssl'] = {'ssl_mode': 'REQUIRED'}
+            
+            return config
+        return None
+    
+    def get_analysis_database_config(self) -> Optional[Dict[str, Any]]:
+        """获取分析结果数据库配置（ANALYSIS_DATABASE_URL）"""
+        db_uri = os.getenv('ANALYSIS_DATABASE_URL')
+        
+        if db_uri:
+            config = self._parse_database_url(db_uri)
+            if config:
+                logger.info(f"已配置分析数据库: {config['host']}:{config['port']}/{config['database']}")
+                return config
+        
+        logger.info("未配置分析数据库（ANALYSIS_DATABASE_URL），分析结果将仅保存到本地文件")
+        return None
 
 # 全局配置实例
 config = Config()
