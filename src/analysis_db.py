@@ -32,7 +32,6 @@ from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -991,129 +990,176 @@ class AnalysisDatabaseAdapter:
         logger.info(f"保存了 {len(ties_df)} 条强互惠关系数据")
     
     def save_post_features(self, session_id: str, features_df: pd.DataFrame):
-        """保存推文计算特征"""
+        """保存推文计算特征
+
+        性能优化：使用批量插入，每批 1000 条
+        """
         if not self.is_available() or features_df.empty:
             return
-        
+
         table_name = 'post_features'
         if self._should_skip_table(table_name):
             logger.info(f"跳过保存 {table_name}（已配置跳过）")
             return
-        
+
         # 覆盖模式：先删除旧数据
         if self._should_use_upsert(table_name):
             self._delete_old_session_data(table_name, session_id)
-        
+
         cursor = self.connection.cursor()
-        
-        for _, row in features_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO post_features 
-                (session_id, tweet_id, conversation_id, utility_score, discussion_rate, 
-                 is_question, topic_ids, sentiment_score, embedding_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    str(row.get('tweet_id', '')),
-                    row.get('conversation_id'),
-                    safe_float(row.get('utility_score'), 0),
-                    safe_float(row.get('discussion_rate'), 0),
-                    bool(row.get('is_question', False)),
-                    json.dumps(row.get('topic_ids', []), ensure_ascii=False),
-                    safe_float_or_none(row.get('sentiment_score')),
-                    row.get('embedding_id')
-                )
-            )
-        
-        self.connection.commit()
+
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO post_features
+            (session_id, tweet_id, conversation_id, utility_score, discussion_rate,
+             is_question, topic_ids, sentiment_score, embedding_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        batch_data = []
+        total_count = len(features_df)
+
+        for idx, row in enumerate(features_df.itertuples(index=False)):
+            batch_data.append((
+                session_id,
+                str(getattr(row, 'tweet_id', '') or ''),
+                getattr(row, 'conversation_id', None),
+                safe_float(getattr(row, 'utility_score', 0), 0),
+                safe_float(getattr(row, 'discussion_rate', 0), 0),
+                bool(getattr(row, 'is_question', False)),
+                json.dumps(getattr(row, 'topic_ids', []) or [], ensure_ascii=False),
+                safe_float_or_none(getattr(row, 'sentiment_score', None)),
+                getattr(row, 'embedding_id', None)
+            ))
+
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+
         cursor.close()
-        logger.info(f"保存了 {len(features_df)} 条推文特征数据")
+        logger.info(f"保存了 {total_count} 条推文特征数据（批量插入）")
 
     def save_conversation_structures(self, session_id: str, structure_df: pd.DataFrame):
-        """保存对话拓扑结构"""
+        """保存对话拓扑结构（使用批量插入优化）"""
         if not self.is_available() or structure_df.empty:
             return
-        
+
         table_name = 'conversation_structures'
         if self._should_skip_table(table_name):
             logger.info(f"跳过保存 {table_name}（已配置跳过）")
             return
-        
+
         # 覆盖模式：先删除旧数据
         if self._should_use_upsert(table_name):
             self._delete_old_session_data(table_name, session_id)
-        
+
         cursor = self.connection.cursor()
-        
-        for _, row in structure_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO conversation_structures 
-                (session_id, conversation_id, tweet_id, in_reply_to_tweet_id, depth)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    str(row.get('conversation_id', '')),
-                    str(row.get('tweet_id', '')),
-                    row.get('in_reply_to_tweet_id'),
-                    safe_int(row.get('depth'), 0)
-                )
-            )
-        
-        self.connection.commit()
+
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO conversation_structures
+            (session_id, conversation_id, tweet_id, in_reply_to_tweet_id, depth)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+
+        batch_data = []
+        total_count = len(structure_df)
+
+        for idx, row in enumerate(structure_df.itertuples(index=False)):
+            batch_data.append((
+                session_id,
+                str(getattr(row, 'conversation_id', '') or ''),
+                str(getattr(row, 'tweet_id', '') or ''),
+                getattr(row, 'in_reply_to_tweet_id', None),
+                safe_int(getattr(row, 'depth', 0), 0)
+            ))
+
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+
         cursor.close()
-        logger.info(f"保存了 {len(structure_df)} 条对话结构数据")
+        logger.info(f"保存了 {total_count} 条对话结构数据（批量插入）")
 
     def save_content_outliers(self, session_id: str, outliers_df: pd.DataFrame):
-        """保存高价值内容数据 (已优化为轻量级快照)"""
+        """保存高价值内容数据 (已优化为轻量级快照，使用批量插入)"""
         if not self.is_available() or outliers_df.empty:
             return
-        
+
         table_name = 'content_outliers'
         if self._should_skip_table(table_name):
             logger.info(f"跳过保存 {table_name}（已配置跳过）")
             return
-        
+
         # 覆盖模式：先删除旧数据
         if self._should_use_upsert(table_name):
             self._delete_old_session_data(table_name, session_id)
-        
+
         cursor = self.connection.cursor()
-        
-        for _, row in outliers_df.iterrows():
+
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO content_outliers
+            (session_id, tweet_id, author, text, created_at, outlier_type, score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+
+        batch_data = []
+        total_count = len(outliers_df)
+
+        for idx, row in enumerate(outliers_df.itertuples(index=False)):
             # 确定 outlier_type
-            outlier_type = row.get('outlier_type')
+            outlier_type = getattr(row, 'outlier_type', None)
             if not outlier_type:
-                if row.get('utility_score', 0) > 0.5:
+                utility_score = getattr(row, 'utility_score', 0) or 0
+                opportunity_type = getattr(row, 'opportunity_type', None)
+                if utility_score > 0.5:
                     outlier_type = 'high_utility'
-                elif row.get('opportunity_type') == 'unanswered_question':
+                elif opportunity_type == 'unanswered_question':
                     outlier_type = 'unanswered_question'
                 else:
                     outlier_type = 'high_traffic'
-            
-            cursor.execute(
-                """
-                INSERT INTO content_outliers 
-                (session_id, tweet_id, author, text, created_at, outlier_type, score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    str(row.get('id', '')),
-                    row.get('author', ''),
-                    str(row.get('text', ''))[:1000],  # 轻量级快照
-                    row.get('created_at'),
-                    outlier_type,
-                    safe_float(row.get('utility_score', row.get('score', 0)), 0)
-                )
+
+            text_val = str(getattr(row, 'text', '') or '')[:1000]
+            score_val = safe_float(
+                getattr(row, 'utility_score', None) or getattr(row, 'score', 0),
+                0
             )
-        
-        self.connection.commit()
+
+            batch_data.append((
+                session_id,
+                str(getattr(row, 'id', '') or ''),
+                getattr(row, 'author', '') or '',
+                text_val,
+                getattr(row, 'created_at', None),
+                outlier_type,
+                score_val
+            ))
+
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+
         cursor.close()
-        logger.info(f"保存了 {len(outliers_df)} 条高价值内容数据")
+        logger.info(f"保存了 {total_count} 条高价值内容数据（批量插入）")
     
     def save_activity_stats(self, session_id: str, stats_data: List[Dict], stat_type: str = 'hourly_heatmap'):
         """
@@ -1450,51 +1496,71 @@ class AnalysisDatabaseAdapter:
         cursor.close()
 
     def save_post_features_enhanced(self, session_id: str, features_df: pd.DataFrame):
-        """保存推文计算特征（升级版：含资产属性与Thread特征）"""
+        """保存推文计算特征（升级版：含资产属性与Thread特征）
+
+        性能优化：使用批量插入，每批 1000 条
+        """
         if not self.is_available() or features_df.empty:
             return
-        
+
         table_name = 'post_features'
         if self._should_skip_table(table_name):
             logger.info(f"跳过保存 {table_name}（已配置跳过）")
             return
-        
+
         # 覆盖模式：先删除旧数据
         if self._should_use_upsert(table_name):
             self._delete_old_session_data(table_name, session_id)
-        
+
         cursor = self.connection.cursor()
-        
-        for _, row in features_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO post_features 
-                (session_id, tweet_id, conversation_id, utility_score, discussion_rate, 
-                 virality_rate, is_question, topic_ids, sentiment_score, asset_quadrant,
-                 thread_retention_rate, thread_length, funnel_signal, embedding_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    str(row.get('tweet_id', '')),
-                    row.get('conversation_id'),
-                    safe_float(row.get('utility_score'), 0),
-                    safe_float(row.get('discussion_rate'), 0),
-                    safe_float(row.get('virality_rate'), 0),
-                    bool(row.get('is_question', False)),
-                    json.dumps(row.get('topic_ids', []), ensure_ascii=False),
-                    safe_float_or_none(row.get('sentiment_score')),
-                    row.get('asset_quadrant', 'other'),
-                    safe_float_or_none(row.get('thread_retention_rate')),
-                    safe_int_or_none(row.get('thread_length')),
-                    row.get('funnel_signal'),
-                    row.get('embedding_id')
-                )
-            )
-        
-        self.connection.commit()
+
+        # 批量插入优化：准备所有数据
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO post_features
+            (session_id, tweet_id, conversation_id, utility_score, discussion_rate,
+             virality_rate, is_question, topic_ids, sentiment_score, asset_quadrant,
+             thread_retention_rate, thread_length, funnel_signal, embedding_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        # 准备批量数据
+        batch_data = []
+        total_count = len(features_df)
+
+        for idx, row in enumerate(features_df.itertuples(index=False)):
+            # 使用 getattr 访问 namedtuple 属性，提供默认值
+            batch_data.append((
+                session_id,
+                str(getattr(row, 'tweet_id', '') or ''),
+                getattr(row, 'conversation_id', None),
+                safe_float(getattr(row, 'utility_score', 0), 0),
+                safe_float(getattr(row, 'discussion_rate', 0), 0),
+                safe_float(getattr(row, 'virality_rate', 0), 0),
+                bool(getattr(row, 'is_question', False)),
+                json.dumps(getattr(row, 'topic_ids', []) or [], ensure_ascii=False),
+                safe_float_or_none(getattr(row, 'sentiment_score', None)),
+                getattr(row, 'asset_quadrant', 'other') or 'other',
+                safe_float_or_none(getattr(row, 'thread_retention_rate', None)),
+                safe_int_or_none(getattr(row, 'thread_length', None)),
+                getattr(row, 'funnel_signal', None),
+                getattr(row, 'embedding_id', None)
+            ))
+
+            # 每 batch_size 条执行一次批量插入
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                logger.debug(f"已插入 {idx + 1}/{total_count} 条推文特征")
+                batch_data = []
+
+        # 插入剩余数据
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+
         cursor.close()
-        logger.info(f"保存了 {len(features_df)} 条推文特征数据（升级版）")
+        logger.info(f"保存了 {total_count} 条推文特征数据（升级版，批量插入）")
 
     def save_content_efficiency(self, session_id: str, efficiency_df: pd.DataFrame):
         """保存内容效能统计数据"""
