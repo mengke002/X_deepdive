@@ -764,20 +764,32 @@ class DeepMiner(MacroNetworkAnalyzer):
         # 清单 2: list_users_key_players.csv (关键角色)
         # 包含：PageRank Top, Betweenness Top, Rising Star Top, Professional Top
         if not df_users.empty:
-            key_players = pd.concat([
-                df_users.sort_values('pagerank', ascending=False).head(50),
-                df_users.sort_values('betweenness', ascending=False).head(50),
-                df_users.sort_values('rising_star_velocity', ascending=False).head(30),
-                df_users.sort_values('avg_utility_score', ascending=False).head(20)
-            ]).drop_duplicates(subset=['username'])
+            # 收集可用的排序结果
+            player_dfs = []
+            
+            # 检查每个排序列是否存在
+            if 'pagerank' in df_users.columns:
+                player_dfs.append(df_users.sort_values('pagerank', ascending=False).head(50))
+            if 'betweenness' in df_users.columns:
+                player_dfs.append(df_users.sort_values('betweenness', ascending=False).head(50))
+            if 'rising_star_velocity' in df_users.columns:
+                player_dfs.append(df_users.sort_values('rising_star_velocity', ascending=False).head(30))
+            if 'avg_utility_score' in df_users.columns:
+                player_dfs.append(df_users.sort_values('avg_utility_score', ascending=False).head(20))
+            
+            # 如果没有任何可用的排序列，跳过此清单
+            if not player_dfs:
+                print("  ⚠️ 跳过 list_users_key_players.csv（无可用排序指标）")
+            else:
+                key_players = pd.concat(player_dfs).drop_duplicates(subset=['username'])
 
-            # 必须保留关键指标列
-            cols = ['username', 'name', 'bio', 'pagerank', 'betweenness', 'rising_star_velocity',
-                    'professionalism_index', 'talkativity_ratio', 'avg_utility_score', 'community_id']
-            # 确保列存在
-            existing_cols = [c for c in cols if c in df_users.columns]
-            key_players[existing_cols].to_csv(f'{self.output_dir}/list_users_key_players.csv', index=False, encoding='utf-8-sig')
-            print(f"  ✓ list_users_key_players.csv ({len(key_players)} 人)")
+                # 必须保留关键指标列
+                cols = ['username', 'name', 'bio', 'pagerank', 'betweenness', 'rising_star_velocity',
+                        'professionalism_index', 'talkativity_ratio', 'avg_utility_score', 'community_id']
+                # 确保列存在
+                existing_cols = [c for c in cols if c in df_users.columns]
+                key_players[existing_cols].to_csv(f'{self.output_dir}/list_users_key_players.csv', index=False, encoding='utf-8-sig')
+                print(f"  ✓ list_users_key_players.csv ({len(key_players)} 人)")
 
         # 清单 3: list_interactions_strong_ties.csv (强互惠关系)
         # 互惠性：A->B 且 B->A
