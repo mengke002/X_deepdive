@@ -439,9 +439,17 @@ class AnalysisDatabaseAdapter:
         # 分割并执行每个 CREATE TABLE 语句
         for statement in SCHEMA_SQL.split(';'):
             statement = statement.strip()
-            if statement and statement.startswith('CREATE TABLE'):
+            # 跳过空语句
+            if not statement:
+                continue
+            # 移除 SQL 注释行，只保留实际的 SQL 语句
+            lines = statement.split('\n')
+            sql_lines = [line for line in lines if not line.strip().startswith('--')]
+            clean_statement = '\n'.join(sql_lines).strip()
+            
+            if clean_statement and 'CREATE TABLE' in clean_statement:
                 try:
-                    cursor.execute(statement)
+                    cursor.execute(clean_statement)
                 except Exception as e:
                     logger.warning(f"创建表时出错（可能已存在）: {e}")
         

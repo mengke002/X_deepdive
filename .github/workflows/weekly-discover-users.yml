@@ -1,0 +1,77 @@
+name: 🔍 Weekly - Discover New Users
+
+on:
+  schedule:
+    - cron: '0 21 * * 0'  # 每周日凌晨5点(UTC+8)，在导出之后
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '发现用户数量限制'
+        required: false
+        default: '50'
+
+env:
+  PYTHON_VERSION: '3.12'
+  TZ: 'Asia/Shanghai'
+
+jobs:
+  discover-users:
+    name: 🔍 发现新用户
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🔍 Discover New Users
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANALYSIS_DATABASE_URL: ${{ secrets.ANALYSIS_DATABASE_URL }}
+        run: |
+          echo "🚀 Discovering new users to expand monitoring network..."
+          python -m src.discover_new_users --limit ${{ github.event.inputs.limit || '50' }}
+          echo "✅ Completed!"
+
+      - name: 🔐 Encrypt results
+        if: always()
+        run: |
+          echo "🔒 Encrypting discovery results..."
+          if [ -d "output" ] && [ "$(ls -A output 2>/dev/null)" ]; then
+            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" discover-users-${{ github.run_number }}.zip output/
+            echo "✅ Encryption completed!"
+          else
+            echo "⚠️ No output files to encrypt"
+            mkdir -p output
+            echo "No output generated" > output/empty.txt
+            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" discover-users-${{ github.run_number }}.zip output/
+          fi
+
+      - name: 📤 Upload encrypted results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discover-users-${{ github.run_number }}
+          path: discover-users-${{ github.run_number }}.zip
+          retention-days: 30
+
+      - name: 📊 Summary
+        run: |
+          echo "## 🔍 Discover New Users Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "运行时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "发现限制: ${{ github.event.inputs.limit || '50' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📁 Output Files" >> $GITHUB_STEP_SUMMARY
+          ls -lh output/*.csv >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No CSV files generated" >> $GITHUB_STEP_SUMMARY
