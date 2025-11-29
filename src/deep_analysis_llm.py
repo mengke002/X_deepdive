@@ -270,8 +270,13 @@ class DeepAnalysisLLM:
                     if isinstance(samples, str):
                         samples = json.loads(samples)
                     samples = samples[:3] if samples else []
-                except:
+                except Exception as e:
+                    logger.warning(f"解析互动样本失败: {e}")
                     samples = ["(无法加载互动样本)"]
+                
+                # 调试日志：检查样本数据
+                if not samples or (len(samples) == 1 and samples[0] == ''):
+                    logger.debug(f"警告: 用户对 {item.get('user_a')}-{item.get('user_b')} 无有效互动样本")
 
                 input_data = json.dumps({
                     "user_a": item.get('user_a', ''),

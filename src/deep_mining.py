@@ -980,16 +980,25 @@ class DeepMiner(MacroNetworkAnalyzer):
                 for _, row in pair_counts.iterrows():
                     pair_dict[(row['source'], row['target'])] = row['count']
                 
+                # 构建互动文本快速查找 map: key=(u, v), value=list of texts
+                inter_texts = defaultdict(list)
+                for _, row in df_inter.iterrows():
+                    inter_texts[(row['source'], row['target'])].append(row.get('text', ''))
+                
                 strong_ties = []
                 processed_pairs = set()
                 for (u, v), count_uv in pair_dict.items():
                     if (v, u) in pair_dict and (u, v) not in processed_pairs and (v, u) not in processed_pairs:
                         count_vu = pair_dict[(v, u)]
+                        # 提取双向互动文本作为样本（取前5条）
+                        texts = inter_texts[(u, v)] + inter_texts[(v, u)]
+                        # 过滤空文本
+                        texts = [t for t in texts if t and str(t).strip()]
                         strong_ties.append({
                             'user_a': u,
                             'user_b': v,
                             'weight': count_uv + count_vu,
-                            'interaction_samples': '[]'
+                            'interaction_samples': json.dumps(texts[:5], ensure_ascii=False) if texts else '[]'
                         })
                         processed_pairs.add((u, v))
                 
