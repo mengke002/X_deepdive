@@ -3,18 +3,67 @@
 """
 分析结果数据库模块
 用于将分析结果存储到 ANALYSIS_DATABASE_URL 指定的数据库中
+
+存储策略配置（通过环境变量控制）：
+- ANALYSIS_STORAGE_MODE: 存储模式
+  - 'snapshot': 快照模式，每次运行保存独立记录（默认）
+  - 'upsert': 覆盖模式，相同数据只保留最新
+  - 'hybrid': 混合模式，快照型数据保留历史，覆盖型数据只保留最新
+  
+- ANALYSIS_MAX_SESSIONS: 最大保留会话数（默认 10）
+  - 自动清理超过此数量的旧会话数据
+  - 设为 0 禁用自动清理
+  
+- ANALYSIS_SKIP_TABLES: 跳过保存的表（逗号分隔）
+  - 例如: "activity_stats,content_efficiency" 将跳过这些表的保存
+
+数据类型分类：
+- 快照型（需要保留历史）：user_stats_history, llm_outputs, analysis_sessions
+- 覆盖型（只需最新）：user_metrics, post_features, activity_stats, content_outliers, 
+                       community_stats, strong_ties, content_efficiency, potential_new_users
 """
 
 import os
 import re
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# =====================================================
+# 存储策略常量
+# =====================================================
+
+# 存储模式
+STORAGE_MODE_SNAPSHOT = 'snapshot'  # 快照模式：每次运行保存独立记录
+STORAGE_MODE_UPSERT = 'upsert'      # 覆盖模式：相同数据只保留最新
+STORAGE_MODE_HYBRID = 'hybrid'      # 混合模式：快照型保留，覆盖型更新
+
+# 数据类型分类
+SNAPSHOT_TABLES = {
+    'user_stats_history',   # 用于时序分析，必须保留历史
+    'llm_outputs',          # LLM 审计日志
+    'analysis_sessions',    # 会话元数据
+}
+
+UPSERT_TABLES = {
+    'user_metrics',         # 用户指标，变化小
+    'post_features',        # 推文特征，相对稳定
+    'activity_stats',       # 活跃度统计，小时热力图/周模式变化小
+    'content_outliers',     # 高价值内容，可覆盖更新
+    'community_stats',      # 社群统计
+    'strong_ties',          # 强互惠关系
+    'content_efficiency',   # 内容效能统计
+    'potential_new_users',  # 潜在新用户
+    'conversation_structures',  # 对话结构
+}
+
+# 默认配置
+DEFAULT_MAX_SESSIONS = 10
 
 
 # 数据库表结构定义（SQL）
@@ -311,7 +360,21 @@ class AnalysisDatabaseAdapter:
     
     def __init__(self):
         self.connection = None
+        
+        # 加载存储策略配置
+        self.storage_mode = os.getenv('ANALYSIS_STORAGE_MODE', STORAGE_MODE_HYBRID).lower()
+        self.max_sessions = int(os.getenv('ANALYSIS_MAX_SESSIONS', DEFAULT_MAX_SESSIONS))
+        self.skip_tables = self._parse_skip_tables(os.getenv('ANALYSIS_SKIP_TABLES', ''))
+        
+        logger.info(f"存储策略配置: mode={self.storage_mode}, max_sessions={self.max_sessions}, skip_tables={self.skip_tables}")
+        
         self._connect()
+    
+    def _parse_skip_tables(self, skip_str: str) -> Set[str]:
+        """解析跳过保存的表列表"""
+        if not skip_str:
+            return set()
+        return {t.strip().lower() for t in skip_str.split(',') if t.strip()}
     
     def _get_database_config(self) -> Optional[Dict[str, Any]]:
         """获取分析数据库配置"""
@@ -385,6 +448,157 @@ class AnalysisDatabaseAdapter:
         self.connection.commit()
         cursor.close()
         logger.info("分析数据库表结构初始化完成")
+    
+    def _should_skip_table(self, table_name: str) -> bool:
+        """检查是否应该跳过该表的保存"""
+        return table_name.lower() in self.skip_tables
+    
+    def _should_use_upsert(self, table_name: str) -> bool:
+        """
+        判断该表是否应该使用覆盖模式
+        
+        Returns:
+            True: 使用覆盖模式（先删后插或 UPSERT）
+            False: 使用快照模式（直接插入）
+        """
+        if self.storage_mode == STORAGE_MODE_SNAPSHOT:
+            return False
+        elif self.storage_mode == STORAGE_MODE_UPSERT:
+            return True
+        else:  # hybrid 模式
+            return table_name.lower() in UPSERT_TABLES
+    
+    def _delete_old_session_data(self, table_name: str, session_id: str):
+        """
+        删除指定 session 的旧数据（用于覆盖模式）
+        
+        注意：只删除同一 session_id 的旧数据，不影响其他 session
+        """
+        if not self.is_available():
+            return
+        
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(f"DELETE FROM {table_name} WHERE session_id = %s", (session_id,))
+            deleted = cursor.rowcount
+            if deleted > 0:
+                logger.debug(f"覆盖模式：已删除 {table_name} 表中 session={session_id} 的 {deleted} 条旧数据")
+        except Exception as e:
+            logger.warning(f"删除旧数据时出错: {e}")
+        finally:
+            self.connection.commit()
+            cursor.close()
+    
+    def cleanup_old_sessions(self, keep_count: int = None):
+        """
+        清理旧的会话数据，只保留最近 N 个会话
+        
+        Args:
+            keep_count: 要保留的会话数，默认使用配置的 max_sessions
+        """
+        if not self.is_available():
+            return
+        
+        keep_count = keep_count if keep_count is not None else self.max_sessions
+        
+        if keep_count <= 0:
+            logger.info("自动清理已禁用 (max_sessions <= 0)")
+            return
+        
+        cursor = self.connection.cursor()
+        
+        try:
+            # 获取所有会话，按时间倒序
+            cursor.execute(
+                "SELECT session_id FROM analysis_sessions ORDER BY started_at DESC"
+            )
+            all_sessions = [row[0] for row in cursor.fetchall()]
+            
+            if len(all_sessions) <= keep_count:
+                logger.info(f"当前会话数 ({len(all_sessions)}) <= 保留数 ({keep_count})，无需清理")
+                return
+            
+            # 需要删除的会话
+            sessions_to_delete = all_sessions[keep_count:]
+            
+            logger.info(f"开始清理 {len(sessions_to_delete)} 个旧会话...")
+            
+            # 需要清理的表（按依赖关系排序）
+            tables_to_clean = [
+                'user_metrics', 'post_features', 'activity_stats', 
+                'content_outliers', 'community_stats', 'strong_ties',
+                'content_efficiency', 'potential_new_users', 
+                'conversation_structures', 'content_blueprints',
+                'content_idea_bank', 'user_strategy_dossiers',
+                'llm_outputs'  # llm_outputs 也可以清理旧会话的
+            ]
+            
+            total_deleted = 0
+            for session_id in sessions_to_delete:
+                session_deleted = 0
+                for table in tables_to_clean:
+                    try:
+                        cursor.execute(f"DELETE FROM {table} WHERE session_id = %s", (session_id,))
+                        session_deleted += cursor.rowcount
+                    except Exception as e:
+                        logger.debug(f"清理 {table} 表时出错（可能表不存在）: {e}")
+                
+                # 删除会话记录本身
+                cursor.execute("DELETE FROM analysis_sessions WHERE session_id = %s", (session_id,))
+                total_deleted += session_deleted
+                logger.debug(f"已清理会话 {session_id}，删除 {session_deleted} 条记录")
+            
+            self.connection.commit()
+            logger.info(f"清理完成：删除了 {len(sessions_to_delete)} 个会话，共 {total_deleted} 条记录")
+            
+        except Exception as e:
+            logger.error(f"清理旧会话时出错: {e}")
+        finally:
+            cursor.close()
+    
+    def get_session_count(self) -> int:
+        """获取当前会话总数"""
+        if not self.is_available():
+            return 0
+        
+        cursor = self.connection.cursor()
+        cursor.execute("SELECT COUNT(*) FROM analysis_sessions")
+        count = cursor.fetchone()[0]
+        cursor.close()
+        return count
+    
+    def get_storage_stats(self) -> Dict[str, Any]:
+        """
+        获取存储统计信息
+        
+        Returns:
+            包含各表记录数、会话数等统计信息的字典
+        """
+        if not self.is_available():
+            return {}
+        
+        cursor = self.connection.cursor()
+        stats = {
+            'storage_mode': self.storage_mode,
+            'max_sessions': self.max_sessions,
+            'tables': {}
+        }
+        
+        tables = [
+            'analysis_sessions', 'user_metrics', 'post_features',
+            'activity_stats', 'content_outliers', 'community_stats',
+            'strong_ties', 'user_stats_history', 'llm_outputs'
+        ]
+        
+        for table in tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                stats['tables'][table] = cursor.fetchone()[0]
+            except:
+                stats['tables'][table] = 0
+        
+        cursor.close()
+        return stats
     
     def _ensure_connection(self):
         """确保数据库连接有效"""
@@ -482,6 +696,15 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or users_df.empty:
             return
         
+        table_name = 'user_metrics'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
+        
         cursor = self.connection.cursor()
         
         for _, row in users_df.iterrows():
@@ -518,6 +741,15 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or not community_stats:
             return
         
+        table_name = 'community_stats'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
+        
         cursor = self.connection.cursor()
         
         for stat in community_stats:
@@ -549,6 +781,15 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or ties_df.empty:
             return
         
+        table_name = 'strong_ties'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
+        
         cursor = self.connection.cursor()
         
         for _, row in ties_df.iterrows():
@@ -576,6 +817,15 @@ class AnalysisDatabaseAdapter:
         """保存推文计算特征"""
         if not self.is_available() or features_df.empty:
             return
+        
+        table_name = 'post_features'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
         
         cursor = self.connection.cursor()
         
@@ -609,6 +859,15 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or structure_df.empty:
             return
         
+        table_name = 'conversation_structures'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
+        
         cursor = self.connection.cursor()
         
         for _, row in structure_df.iterrows():
@@ -635,6 +894,15 @@ class AnalysisDatabaseAdapter:
         """保存高价值内容数据 (已优化为轻量级快照)"""
         if not self.is_available() or outliers_df.empty:
             return
+        
+        table_name = 'content_outliers'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
         
         cursor = self.connection.cursor()
         
@@ -682,6 +950,28 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or not stats_data:
             return
         
+        table_name = 'activity_stats'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：删除同一 session 和 stat_type 的旧数据
+        if self._should_use_upsert(table_name):
+            cursor = self.connection.cursor()
+            try:
+                cursor.execute(
+                    f"DELETE FROM {table_name} WHERE session_id = %s AND stat_type = %s",
+                    (session_id, stat_type)
+                )
+                deleted = cursor.rowcount
+                if deleted > 0:
+                    logger.debug(f"覆盖模式：已删除 {table_name} 表中 session={session_id}, type={stat_type} 的 {deleted} 条旧数据")
+            except Exception as e:
+                logger.warning(f"删除旧数据时出错: {e}")
+            finally:
+                self.connection.commit()
+                cursor.close()
+        
         cursor = self.connection.cursor()
         
         for stat in stats_data:
@@ -718,6 +1008,15 @@ class AnalysisDatabaseAdapter:
         """保存潜在新用户数据"""
         if not self.is_available() or users_df.empty:
             return
+        
+        table_name = 'potential_new_users'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
         
         cursor = self.connection.cursor()
         
@@ -978,6 +1277,15 @@ class AnalysisDatabaseAdapter:
         if not self.is_available() or features_df.empty:
             return
         
+        table_name = 'post_features'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
+        
         cursor = self.connection.cursor()
         
         for _, row in features_df.iterrows():
@@ -1015,6 +1323,15 @@ class AnalysisDatabaseAdapter:
         """保存内容效能统计数据"""
         if not self.is_available() or efficiency_df.empty:
             return
+        
+        table_name = 'content_efficiency'
+        if self._should_skip_table(table_name):
+            logger.info(f"跳过保存 {table_name}（已配置跳过）")
+            return
+        
+        # 覆盖模式：先删除旧数据
+        if self._should_use_upsert(table_name):
+            self._delete_old_session_data(table_name, session_id)
         
         cursor = self.connection.cursor()
         

@@ -109,7 +109,7 @@ class DeepMiner(MacroNetworkAnalyzer):
         # 9. 保存分析结果到数据库 (新增)
         self._save_to_analysis_db()
 
-        # 10. 完成会话
+        # 10. 完成会话并清理旧数据
         if self.analysis_db and self.session_id:
             stats = {
                 'users_analyzed': len(self.users_profile),
@@ -117,6 +117,14 @@ class DeepMiner(MacroNetworkAnalyzer):
                 'communities_found': len(set(self.community_map.values())) if self.community_map else 0
             }
             self.analysis_db.complete_session(self.session_id, stats)
+            
+            # 自动清理旧会话数据
+            self.analysis_db.cleanup_old_sessions()
+            
+            # 输出存储统计信息
+            storage_stats = self.analysis_db.get_storage_stats()
+            print(f"\n[存储统计] 模式: {storage_stats.get('storage_mode', 'N/A')}, "
+                  f"当前会话数: {storage_stats.get('tables', {}).get('analysis_sessions', 0)}")
 
         print("\n" + "=" * 60)
         print("深度挖掘完成！所有清单与统计报告已生成。")
@@ -1238,6 +1246,14 @@ def main():
             'communities_found': len(set(miner.community_map.values())) if miner.community_map else 0
         }
         miner.analysis_db.complete_session(miner.session_id, stats)
+        
+        # 自动清理旧会话数据
+        miner.analysis_db.cleanup_old_sessions()
+        
+        # 输出存储统计信息
+        storage_stats = miner.analysis_db.get_storage_stats()
+        print(f"\n[存储统计] 模式: {storage_stats.get('storage_mode', 'N/A')}, "
+              f"当前会话数: {storage_stats.get('tables', {}).get('analysis_sessions', 0)}")
     
     print("\n" + "=" * 60)
     print("✅ 深度挖掘完成！")
