@@ -47,14 +47,17 @@ jobs:
       - name: 🔐 Encrypt results
         run: |
           echo "🔒 Encrypting output files..."
-          zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" network-results-${{ github.run_number }}.zip output/
-          echo "✅ Encryption completed!"
+          TIMESTAMP=$(date '+%Y%m%d%H%M')
+          ZIP_NAME="network-results-${TIMESTAMP}.zip"
+          zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "✅ Encryption completed: ${ZIP_NAME}"
 
       - name: 📤 Upload encrypted results
         uses: actions/upload-artifact@v4
         with:
-          name: network-results-${{ github.run_number }}
-          path: network-results-${{ github.run_number }}.zip
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
           retention-days: 7
 
       - name: 📊 Summary

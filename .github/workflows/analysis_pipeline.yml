@@ -80,14 +80,17 @@ jobs:
     - name: 🔐 Encrypt Analysis Results
       run: |
         echo "🔒 Encrypting analysis results..."
-        zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" analysis-results-${{ github.run_number }}.zip output/
-        echo "✅ Encryption completed!"
+        TIMESTAMP=$(date '+%Y%m%d%H%M')
+        ZIP_NAME="analysis-results-${TIMESTAMP}.zip"
+        zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
+        echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+        echo "✅ Encryption completed: ${ZIP_NAME}"
 
     - name: Archive Encrypted Analysis Results
       uses: actions/upload-artifact@v4
       with:
-        name: analysis-results-${{ github.run_number }}
-        path: analysis-results-${{ github.run_number }}.zip
+        name: ${{ env.ZIP_NAME }}
+        path: ${{ env.ZIP_NAME }}
 
     - name: Commit Results to Repo
       run: |

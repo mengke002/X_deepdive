@@ -48,22 +48,25 @@ jobs:
         if: always()
         run: |
           echo "🔒 Encrypting discovery results..."
+          TIMESTAMP=$(date '+%Y%m%d%H%M')
+          ZIP_NAME="discover-users-${TIMESTAMP}.zip"
           if [ -d "output" ] && [ "$(ls -A output 2>/dev/null)" ]; then
-            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" discover-users-${{ github.run_number }}.zip output/
-            echo "✅ Encryption completed!"
+            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
+            echo "✅ Encryption completed: ${ZIP_NAME}"
           else
             echo "⚠️ No output files to encrypt"
             mkdir -p output
             echo "No output generated" > output/empty.txt
-            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" discover-users-${{ github.run_number }}.zip output/
+            zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
           fi
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: 📤 Upload encrypted results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: discover-users-${{ github.run_number }}
-          path: discover-users-${{ github.run_number }}.zip
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
       - name: 📊 Summary
