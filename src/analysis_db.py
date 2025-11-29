@@ -670,14 +670,31 @@ class AnalysisDatabaseAdapter:
         cursor.close()
         logger.info(f"保存了 {len(outliers_df)} 条高价值内容数据")
     
-    def save_activity_stats(self, session_id: str, heatmap_data: List[Dict]):
-        """保存活跃度统计数据"""
-        if not self.is_available() or not heatmap_data:
+    def save_activity_stats(self, session_id: str, stats_data: List[Dict], stat_type: str = 'hourly_heatmap'):
+        """
+        保存活跃度统计数据
+        
+        Args:
+            session_id: 会话 ID
+            stats_data: 统计数据列表
+            stat_type: 统计类型 ('hourly_heatmap', 'daily_trend', 'weekly_pattern')
+        """
+        if not self.is_available() or not stats_data:
             return
         
         cursor = self.connection.cursor()
         
-        for stat in heatmap_data:
+        for stat in stats_data:
+            # 根据不同类型获取 time_key
+            if stat_type == 'hourly_heatmap':
+                time_key = str(stat.get('hour', 0))
+            elif stat_type == 'daily_trend':
+                time_key = str(stat.get('date', ''))
+            elif stat_type == 'weekly_pattern':
+                time_key = str(stat.get('day_of_week', 0))
+            else:
+                time_key = str(stat.get('time_key', '0'))
+            
             cursor.execute(
                 """
                 INSERT INTO activity_stats 
@@ -686,16 +703,16 @@ class AnalysisDatabaseAdapter:
                 """,
                 (
                     session_id,
-                    'hourly_heatmap',
-                    str(stat.get('hour', 0)),
-                    int(stat.get('activity_count', 0) or 0),
+                    stat_type,
+                    time_key,
+                    int(stat.get('activity_count', stat.get('post_count', 0)) or 0),
                     float(stat.get('activity_percentage', 0) or 0)
                 )
             )
         
         self.connection.commit()
         cursor.close()
-        logger.info(f"保存了 {len(heatmap_data)} 条活跃度统计数据")
+        logger.info(f"保存了 {len(stats_data)} 条 {stat_type} 统计数据")
     
     def save_potential_new_users(self, session_id: str, users_df: pd.DataFrame):
         """保存潜在新用户数据"""

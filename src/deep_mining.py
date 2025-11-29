@@ -126,23 +126,57 @@ class DeepMiner(MacroNetworkAnalyzer):
         """生成 Phase 1 要求的具体统计报告产出物"""
         print("\n[Deep Mining] 生成统计报告 (Fingerprints & Content DNA)...")
 
-        # 1. 活跃节律 (Activity Heatmap)
+        # 1. 活跃节律 - 小时热力图 (Hourly Heatmap)
         # 聚合所有用户的活跃小时分布
         total_hours = Counter()
         for user, stats in self.behavior_stats.items():
             total_hours.update(stats['active_hours'])
 
         heatmap_data = []
+        total_activity = sum(total_hours.values())
         for hour in range(24):
             heatmap_data.append({
                 'hour': hour,
                 'activity_count': total_hours[hour],
-                'activity_percentage': total_hours[hour] / sum(total_hours.values()) if sum(total_hours.values()) > 0 else 0
+                'activity_percentage': total_hours[hour] / total_activity if total_activity > 0 else 0
             })
-        pd.DataFrame(heatmap_data).to_csv(f'{self.output_dir}/stats_activity_heatmap.csv', index=False)
-        print(f"  ✓ stats_activity_heatmap.csv")
+        pd.DataFrame(heatmap_data).to_csv(f'{self.output_dir}/stats_hourly_heatmap.csv', index=False)
+        print(f"  ✓ stats_hourly_heatmap.csv")
 
-        # 2. 内容格式效能 (Content Efficiency by Media Type)
+        # 2. 日活跃趋势 (Daily Trend)
+        if self.content_stats:
+            df_content = pd.DataFrame(self.content_stats)
+            df_content['created_at'] = pd.to_datetime(df_content['created_at'], errors='coerce')
+            df_content['date'] = df_content['created_at'].dt.date
+            
+            daily_data = df_content.groupby('date').agg({
+                'id': 'count',
+                'view_count': 'sum',
+                'like_count': 'sum',
+                'reply_count': 'sum'
+            }).rename(columns={'id': 'post_count'}).reset_index()
+            daily_data = daily_data.sort_values('date')
+            daily_data.to_csv(f'{self.output_dir}/stats_daily_trend.csv', index=False)
+            print(f"  ✓ stats_daily_trend.csv")
+
+        # 3. 周活跃模式 (Weekly Pattern)
+        if self.content_stats:
+            df_content = pd.DataFrame(self.content_stats)
+            df_content['created_at'] = pd.to_datetime(df_content['created_at'], errors='coerce')
+            df_content['day_of_week'] = df_content['created_at'].dt.dayofweek  # 0=Monday, 6=Sunday
+            df_content['day_name'] = df_content['created_at'].dt.day_name()
+            
+            weekly_data = df_content.groupby(['day_of_week', 'day_name']).agg({
+                'id': 'count',
+                'view_count': 'mean',
+                'like_count': 'mean',
+                'reply_count': 'mean'
+            }).rename(columns={'id': 'post_count'}).reset_index()
+            weekly_data = weekly_data.sort_values('day_of_week')
+            weekly_data.to_csv(f'{self.output_dir}/stats_weekly_pattern.csv', index=False)
+            print(f"  ✓ stats_weekly_pattern.csv")
+
+        # 4. 内容格式效能 (Content Efficiency by Media Type)
         # 聚合不同 media_type 的平均表现
         if self.content_stats:
             df_content = pd.DataFrame(self.content_stats)
@@ -158,7 +192,7 @@ class DeepMiner(MacroNetworkAnalyzer):
             efficiency.to_csv(f'{self.output_dir}/stats_content_efficiency.csv', index=False)
             print(f"  ✓ stats_content_efficiency.csv")
 
-        # 3. 流量漏斗 (Traffic Funnel)
+        # 5. 流量漏斗 (Traffic Funnel)
         # 计算全局转化率
         if self.content_stats:
             df_content = pd.DataFrame(self.content_stats)
@@ -167,7 +201,7 @@ class DeepMiner(MacroNetworkAnalyzer):
                 'total_views': total_views,
                 'total_likes': df_content['like_count'].sum(),
                 'total_replies': df_content['reply_count'].sum(),
-                'total_retweets': df_content.get('retweet_count', pd.Series([0]*len(df_content))).sum(), # content_stats 可能没存 retweet? 检查下
+                'total_retweets': df_content.get('retweet_count', pd.Series([0]*len(df_content))).sum(),
                 'view_to_like_rate': df_content['like_count'].sum() / total_views if total_views > 0 else 0,
                 'view_to_reply_rate': df_content['reply_count'].sum() / total_views if total_views > 0 else 0,
             }
@@ -195,6 +229,65 @@ class DeepMiner(MacroNetworkAnalyzer):
 
         num_communities = len(set(partition.values()))
         print(f"  ✓ 发现 {num_communities} 个社群")
+        
+        # 生成社群统计文件
+        self._generate_community_stats()
+
+    def _generate_community_stats(self):
+        """生成社群统计文件 community_stats.csv"""
+        if not self.community_map:
+            print("  警告: 无社群数据，跳过社群统计生成")
+            return
+        
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # 按社群聚合统计
+        community_data = defaultdict(lambda: {
+            'member_count': 0,
+            'members': [],
+            'total_pagerank': 0,
+            'total_betweenness': 0,
+            'total_followers': 0
+        })
+        
+        for user, comm_id in self.community_map.items():
+            community_data[comm_id]['member_count'] += 1
+            community_data[comm_id]['members'].append(user)
+            
+            if user in self.users_profile:
+                profile = self.users_profile[user]
+                community_data[comm_id]['total_pagerank'] += profile.get('pagerank', 0)
+                community_data[comm_id]['total_betweenness'] += profile.get('betweenness', 0)
+                community_data[comm_id]['total_followers'] += profile.get('followers_count', 0)
+        
+        # 构建输出数据
+        stats_list = []
+        for comm_id, data in community_data.items():
+            member_count = data['member_count']
+            # 获取 top 成员（按 pagerank 排序）
+            members_with_pr = []
+            for m in data['members']:
+                if m in self.users_profile:
+                    members_with_pr.append((m, self.users_profile[m].get('pagerank', 0)))
+                else:
+                    members_with_pr.append((m, 0))
+            members_with_pr.sort(key=lambda x: x[1], reverse=True)
+            top_members = [m[0] for m in members_with_pr[:10]]
+            
+            stats_list.append({
+                'community_id': comm_id,
+                'member_count': member_count,
+                'avg_pagerank': data['total_pagerank'] / member_count if member_count > 0 else 0,
+                'avg_betweenness': data['total_betweenness'] / member_count if member_count > 0 else 0,
+                'total_followers': data['total_followers'],
+                'top_members_json': json.dumps(top_members, ensure_ascii=False),
+                'topic_keywords_json': '[]'  # 后续可以通过 LLM 分析补充
+            })
+        
+        df_stats = pd.DataFrame(stats_list)
+        df_stats = df_stats.sort_values('member_count', ascending=False)
+        df_stats.to_csv(f'{self.output_dir}/community_stats.csv', index=False, encoding='utf-8-sig')
+        print(f"  ✓ community_stats.csv ({len(df_stats)} 个社群)")
 
     def _scan_behavior_and_content(self):
         """扫描推文数据，提取行为指纹和内容指标"""
@@ -613,35 +706,55 @@ class DeepMiner(MacroNetworkAnalyzer):
                 profile['avg_utility_score'] = 0
 
     def _generate_phase2_candidates(self):
-        """生成 Phase 2 所需的 4 个清单"""
+        """生成 Phase 2 所需的清单"""
         print("\n[Deep Mining] 生成 Phase 2 候选清单...")
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 清单 1: list_posts_outliers.csv (异常价值帖子)
+        # 清单 1: list_posts_outliers.csv (异常价值帖子) 及各类型单独文件
         # 筛选标准：干货指数 Top 50 OR 浏览量 Top 50 OR 讨论率极高
         df_content = pd.DataFrame(self.content_stats)
+        df_users = pd.DataFrame(self.users_profile.values()) if self.users_profile else pd.DataFrame()
+        
         if not df_content.empty:
             # 排除无效内容
             df_content = df_content[df_content['text'].str.len() > 10]
 
+            # 计算讨论率
+            df_content['discussion_rate'] = df_content['reply_count'] / (df_content['view_count'] + 1)
+
             # 策略A：高干货 (Utility > 0.5 且 Like > 5)
-            high_utility = df_content[(df_content['utility_score'] > 0.5) & (df_content['like_count'] > 5)]
+            high_utility = df_content[(df_content['utility_score'] > 0.5) & (df_content['like_count'] > 5)].copy()
+            high_utility['outlier_type'] = 'high_utility'
+            high_utility = high_utility.head(50)
+            
+            # 单独导出高干货内容
+            if not high_utility.empty:
+                high_utility.to_csv(f'{self.output_dir}/list_posts_high_utility.csv', index=False, encoding='utf-8-sig')
+                print(f"  ✓ list_posts_high_utility.csv ({len(high_utility)} 条)")
 
             # 策略B：高流量
-            high_traffic = df_content.sort_values('view_count', ascending=False).head(50)
+            high_traffic = df_content.sort_values('view_count', ascending=False).head(50).copy()
+            high_traffic['outlier_type'] = 'high_traffic'
+            
+            # 单独导出高流量内容
+            high_traffic.to_csv(f'{self.output_dir}/list_posts_high_traffic.csv', index=False, encoding='utf-8-sig')
+            print(f"  ✓ list_posts_high_traffic.csv ({len(high_traffic)} 条)")
 
             # 策略C：高讨论 (Reply/View 高)
-            df_content['discussion_rate'] = df_content['reply_count'] / (df_content['view_count'] + 1)
-            high_discuss = df_content.sort_values('discussion_rate', ascending=False).head(50)
+            high_discuss = df_content.sort_values('discussion_rate', ascending=False).head(50).copy()
+            high_discuss['outlier_type'] = 'high_discussion'
+            
+            # 单独导出高讨论内容
+            high_discuss.to_csv(f'{self.output_dir}/list_posts_high_discussion.csv', index=False, encoding='utf-8-sig')
+            print(f"  ✓ list_posts_high_discussion.csv ({len(high_discuss)} 条)")
 
-            # 合并并去重
-            outliers = pd.concat([high_utility.head(50), high_traffic, high_discuss]).drop_duplicates(subset=['id', 'text'])
+            # 合并所有异常内容并去重
+            outliers = pd.concat([high_utility, high_traffic, high_discuss]).drop_duplicates(subset=['id', 'text'])
             outliers.to_csv(f'{self.output_dir}/list_posts_outliers.csv', index=False, encoding='utf-8-sig')
             print(f"  ✓ list_posts_outliers.csv ({len(outliers)} 条)")
 
         # 清单 2: list_users_key_players.csv (关键角色)
         # 包含：PageRank Top, Betweenness Top, Rising Star Top, Professional Top
-        df_users = pd.DataFrame(self.users_profile.values())
         if not df_users.empty:
             key_players = pd.concat([
                 df_users.sort_values('pagerank', ascending=False).head(50),
@@ -716,7 +829,7 @@ class DeepMiner(MacroNetworkAnalyzer):
 
         # 清单 4: list_content_opportunities.csv (内容机会)
         # 筛选标准：是问句，回复数为0，但作者影响力尚可（不是垃圾号）；或者 回复数极高（争议）
-        if not df_content.empty:
+        if not df_content.empty and not df_users.empty:
             # 机会 A: 待回答的高价值问题 (Question, Reply=0, Author PageRank Top 50%)
             # 先获取作者 PageRank
             if 'pagerank' in df_users.columns:
@@ -731,13 +844,28 @@ class DeepMiner(MacroNetworkAnalyzer):
                     (df_content['reply_count'] == 0) &
                     (df_content['author_pr'] > median_pr)
                 ].copy()
+                unanswered_questions['outlier_type'] = 'unanswered_question'
                 unanswered_questions['opportunity_type'] = 'unanswered_question'
+                unanswered_questions = unanswered_questions.head(50)
+                
+                # 单独导出未回答问题
+                if not unanswered_questions.empty:
+                    unanswered_questions.to_csv(f'{self.output_dir}/list_posts_unanswered_question.csv', index=False, encoding='utf-8-sig')
+                    print(f"  ✓ list_posts_unanswered_question.csv ({len(unanswered_questions)} 条)")
 
                 # 机会 B: 激烈讨论 (Reply > 10)
                 hot_debates = df_content[df_content['reply_count'] > 10].copy()
+                hot_debates['outlier_type'] = 'hot_debate'
                 hot_debates['opportunity_type'] = 'hot_debate'
+                hot_debates = hot_debates.head(50)
+                
+                # 单独导出热议话题
+                if not hot_debates.empty:
+                    hot_debates.to_csv(f'{self.output_dir}/list_posts_hot_debate.csv', index=False, encoding='utf-8-sig')
+                    print(f"  ✓ list_posts_hot_debate.csv ({len(hot_debates)} 条)")
 
-                opportunities = pd.concat([unanswered_questions.head(50), hot_debates.head(50)])
+                # 合并内容机会
+                opportunities = pd.concat([unanswered_questions, hot_debates])
                 opportunities.to_csv(f'{self.output_dir}/list_content_opportunities.csv', index=False, encoding='utf-8-sig')
                 print(f"  ✓ list_content_opportunities.csv ({len(opportunities)} 条)")
 
@@ -842,6 +970,53 @@ class DeepMiner(MacroNetworkAnalyzer):
                     df_ties = pd.DataFrame(strong_ties)
                     self.analysis_db.save_strong_ties(self.session_id, df_ties)
             
+            # 4.5 保存社群统计
+            if self.community_map:
+                # 按社群聚合统计
+                community_data = defaultdict(lambda: {
+                    'member_count': 0,
+                    'members': [],
+                    'total_pagerank': 0,
+                    'total_betweenness': 0,
+                    'total_followers': 0
+                })
+                
+                for user, comm_id in self.community_map.items():
+                    community_data[comm_id]['member_count'] += 1
+                    community_data[comm_id]['members'].append(user)
+                    
+                    if user in self.users_profile:
+                        profile = self.users_profile[user]
+                        community_data[comm_id]['total_pagerank'] += profile.get('pagerank', 0)
+                        community_data[comm_id]['total_betweenness'] += profile.get('betweenness', 0)
+                        community_data[comm_id]['total_followers'] += profile.get('followers_count', 0)
+                
+                community_stats = []
+                for comm_id, data in community_data.items():
+                    member_count = data['member_count']
+                    # 获取 top 成员（按 pagerank 排序）
+                    members_with_pr = []
+                    for m in data['members']:
+                        if m in self.users_profile:
+                            members_with_pr.append((m, self.users_profile[m].get('pagerank', 0)))
+                        else:
+                            members_with_pr.append((m, 0))
+                    members_with_pr.sort(key=lambda x: x[1], reverse=True)
+                    top_members = [m[0] for m in members_with_pr[:10]]
+                    
+                    community_stats.append({
+                        'community_id': comm_id,
+                        'member_count': member_count,
+                        'avg_pagerank': data['total_pagerank'] / member_count if member_count > 0 else 0,
+                        'avg_betweenness': data['total_betweenness'] / member_count if member_count > 0 else 0,
+                        'total_followers': data['total_followers'],
+                        'top_members': top_members,
+                        'topic_keywords': []
+                    })
+                
+                if community_stats:
+                    self.analysis_db.save_community_stats(self.session_id, community_stats)
+            
             # 5. 保存内容异常点
             if self.content_stats:
                 df_content = pd.DataFrame(self.content_stats)
@@ -854,7 +1029,7 @@ class DeepMiner(MacroNetworkAnalyzer):
                 if not high_value.empty:
                     self.analysis_db.save_content_outliers(self.session_id, high_value)
             
-            # 6. 保存活跃度统计
+            # 6. 保存活跃度统计（小时热力图）
             total_hours = Counter()
             for user, stats in self.behavior_stats.items():
                 total_hours.update(stats['active_hours'])
@@ -868,9 +1043,47 @@ class DeepMiner(MacroNetworkAnalyzer):
                     'activity_percentage': total_hours[hour] / total if total > 0 else 0
                 })
             if heatmap_data:
-                self.analysis_db.save_activity_stats(self.session_id, heatmap_data)
+                self.analysis_db.save_activity_stats(self.session_id, heatmap_data, 'hourly_heatmap')
             
-            # 7. 保存内容效能统计
+            # 7. 保存日活跃趋势
+            if self.content_stats:
+                df_content = pd.DataFrame(self.content_stats)
+                df_content['created_at'] = pd.to_datetime(df_content['created_at'], errors='coerce')
+                df_content['date'] = df_content['created_at'].dt.date
+                
+                daily_data = df_content.groupby('date').agg({
+                    'id': 'count'
+                }).rename(columns={'id': 'post_count'}).reset_index()
+                
+                daily_stats = []
+                for _, row in daily_data.iterrows():
+                    daily_stats.append({
+                        'date': str(row['date']),
+                        'post_count': row['post_count']
+                    })
+                if daily_stats:
+                    self.analysis_db.save_activity_stats(self.session_id, daily_stats, 'daily_trend')
+            
+            # 8. 保存周活跃模式
+            if self.content_stats:
+                df_content = pd.DataFrame(self.content_stats)
+                df_content['created_at'] = pd.to_datetime(df_content['created_at'], errors='coerce')
+                df_content['day_of_week'] = df_content['created_at'].dt.dayofweek
+                
+                weekly_data = df_content.groupby('day_of_week').agg({
+                    'id': 'count'
+                }).rename(columns={'id': 'post_count'}).reset_index()
+                
+                weekly_stats = []
+                for _, row in weekly_data.iterrows():
+                    weekly_stats.append({
+                        'day_of_week': row['day_of_week'],
+                        'post_count': row['post_count']
+                    })
+                if weekly_stats:
+                    self.analysis_db.save_activity_stats(self.session_id, weekly_stats, 'weekly_pattern')
+            
+            # 9. 保存内容效能统计
             if self.content_stats:
                 df_content = pd.DataFrame(self.content_stats)
                 efficiency = df_content.groupby('media_type').agg({

@@ -201,7 +201,7 @@ class DeepAnalysisLLM:
                     results.append(res)
 
         self.results['viral_blueprints'] = results
-        self._save_json(results, 'Content_Blueprints.json')
+        self._save_json(results, 'viral_deconstruction.json')
 
     def analyze_user_strategy(self, limit=20):
         """任务二：用户策略画像"""
@@ -292,7 +292,7 @@ class DeepAnalysisLLM:
                     results.append(res)
 
         self.results['relationship_insights'] = results
-        self._save_json(results, 'Community_Insights.json')
+        self._save_json(results, 'relationship_insight.json')
 
     def analyze_content_opportunities(self, limit=20):
         """任务四：内容机会挖掘"""
@@ -452,7 +452,7 @@ class DeepAnalysisLLM:
                     results.append(res)
 
         self.results['monetization_insights'] = results
-        self._save_json(results, 'Monetization_Insights.json')
+        self._save_json(results, 'monetization_analysis.json')
 
     def _save_results_to_db(self):
         """保存 LLM 分析结果到数据库"""

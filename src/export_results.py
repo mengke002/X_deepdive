@@ -594,7 +594,7 @@ def export_content_blueprints(connection, session_id: str, output_dir: str, fmt:
         llm_insights_dir = os.path.join(output_dir, 'llm_insights')
         os.makedirs(llm_insights_dir, exist_ok=True)
         
-        filepath = os.path.join(llm_insights_dir, 'Content_Blueprints.json')
+        filepath = os.path.join(llm_insights_dir, 'viral_deconstruction.json')
         _save_json_from_df(df, filepath, ['hook_style', 'readability_features', 'call_to_action'])
         files_created.append(filepath)
         print_success(f"导出爆款内容蓝图: {os.path.basename(filepath)} ({len(df)} 条)")
