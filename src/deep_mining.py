@@ -367,7 +367,7 @@ class DeepMiner(MacroNetworkAnalyzer):
         
         # 2.1 活跃小时统计
         hour_counts = df_valid.groupby(['Author Username', 'hour']).size().reset_index(name='count')
-        for _, row in hour_counts.itertuples(index=False):
+        for row in hour_counts.itertuples(index=False):
             user, hour, count = row
             self.behavior_stats[user]['active_hours'][hour] += count
         
