@@ -1,0 +1,64 @@
+name: 📊 Stage 1a - Network Analysis
+
+on:
+  schedule:
+    - cron: '0 18 * * *'  # 每天凌晨2点(UTC+8)
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: '任务类型 (network,community 或 all)'
+        required: false
+        default: 'network,community'
+
+env:
+  PYTHON_VERSION: '3.12'
+  TZ: 'Asia/Shanghai'
+
+jobs:
+  network-analysis:
+    name: 🔬 网络图分析
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🔬 Run Network Analysis
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANALYSIS_DATABASE_URL: ${{ secrets.ANALYSIS_DATABASE_URL }}
+        run: |
+          echo "🚀 Running network analysis..."
+          python -m src.deep_mining --tasks ${{ github.event.inputs.tasks || 'network,community' }}
+          echo "✅ Completed!"
+
+      - name: 🔐 Encrypt results
+        run: |
+          echo "🔒 Encrypting output files..."
+          zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" network-results-${{ github.run_number }}.zip output/
+          echo "✅ Encryption completed!"
+
+      - name: 📤 Upload encrypted results
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-results-${{ github.run_number }}
+          path: network-results-${{ github.run_number }}.zip
+          retention-days: 7
+
+      - name: 📊 Summary
+        run: |
+          echo "## 📊 Network Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "Tasks: ${{ github.event.inputs.tasks || 'network,community' }}" >> $GITHUB_STEP_SUMMARY
+          ls -lh output/*.csv >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No CSV files" >> $GITHUB_STEP_SUMMARY
