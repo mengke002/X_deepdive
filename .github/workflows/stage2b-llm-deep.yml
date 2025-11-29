@@ -52,15 +52,17 @@ jobs:
         run: |
           echo "🔒 Encrypting LLM insights..."
           TIMESTAMP=$(date '+%Y%m%d%H%M')
-          ZIP_NAME="llm-deep-insights-${TIMESTAMP}.zip"
+          ARTIFACT_NAME="llm-deep-insights-${TIMESTAMP}"
+          ZIP_NAME="${ARTIFACT_NAME}.zip"
           zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/llm_insights/
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
           echo "✅ Encryption completed: ${ZIP_NAME}"
 
       - name: 📤 Upload encrypted insights
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
 

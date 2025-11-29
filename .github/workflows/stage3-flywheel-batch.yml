@@ -51,7 +51,8 @@ jobs:
         run: |
           echo "🔒 Encrypting flywheel output..."
           TIMESTAMP=$(date '+%Y%m%d%H%M')
-          ZIP_NAME="flywheel-results-${TIMESTAMP}.zip"
+          ARTIFACT_NAME="flywheel-results-${TIMESTAMP}"
+          ZIP_NAME="${ARTIFACT_NAME}.zip"
           if [ -d "output" ] && [ "$(ls -A output 2>/dev/null)" ]; then
             zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
             echo "✅ Encryption completed: ${ZIP_NAME}"
@@ -61,13 +62,14 @@ jobs:
             echo "No output generated" > output/empty.txt
             zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" output/
           fi
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: 📤 Upload encrypted flywheel results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ZIP_NAME }}
           retention-days: 7
 

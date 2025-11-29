@@ -42,15 +42,17 @@ jobs:
         run: |
           echo "🔒 Encrypting export files..."
           TIMESTAMP=$(date '+%Y%m%d%H%M')
-          ZIP_NAME="weekly-export-${TIMESTAMP}.zip"
+          ARTIFACT_NAME="weekly-export-${TIMESTAMP}"
+          ZIP_NAME="${ARTIFACT_NAME}.zip"
           zip -r -e -P "${{ secrets.ARTIFACT_PASSWORD }}" "${ZIP_NAME}" exports/
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
           echo "✅ Encryption completed: ${ZIP_NAME}"
 
       - name: 📦 Upload encrypted exports
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
 
