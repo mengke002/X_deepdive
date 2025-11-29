@@ -8,6 +8,7 @@ on:
 env:
   PYTHON_VERSION: '3.12'
   TZ: 'Asia/Shanghai'
+  PYTHONUNBUFFERED: '1'
 
 jobs:
   export:

@@ -135,6 +135,10 @@ def get_analysis_connection():
         db_config = cfg.get_analysis_database_config()
         if db_config:
             import pymysql
+            # 添加超时设置，避免在 CI 环境中无限等待
+            db_config['connect_timeout'] = 10
+            db_config['read_timeout'] = 60
+            db_config['write_timeout'] = 60
             connection = pymysql.connect(**db_config)
             print_success(f"连接到分析数据库: {db_config['host']}:{db_config['port']}/{db_config['database']}")
             return connection
@@ -174,6 +178,11 @@ def get_analysis_connection():
         
         if params and 'ssl-mode=REQUIRED' in params:
             config['ssl'] = {'ssl_mode': 'REQUIRED'}
+        
+        # 添加超时设置，避免在 CI 环境中无限等待
+        config['connect_timeout'] = 10
+        config['read_timeout'] = 60
+        config['write_timeout'] = 60
         
         connection = pymysql.connect(**config)
         print_success(f"连接到分析数据库: {host}:{port}/{database}")

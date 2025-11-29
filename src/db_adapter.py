@@ -66,6 +66,11 @@ class DatabaseAdapter:
             if config.get('ssl') is None:
                 config.pop('ssl', None)
             
+            # 添加超时设置，避免在 CI 环境中无限等待
+            config['connect_timeout'] = 10  # 连接超时 10 秒
+            config['read_timeout'] = 60     # 读取超时 60 秒
+            config['write_timeout'] = 60    # 写入超时 60 秒
+            
             self.connection = pymysql.connect(**config)
             logger.info(f"数据库连接成功: {config['host']}:{config['port']}/{config['database']}")
         except ImportError:
