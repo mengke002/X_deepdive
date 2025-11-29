@@ -360,6 +360,7 @@ class AnalysisDatabaseAdapter:
     
     def __init__(self):
         self.connection = None
+        self.source_connection = None  # 源数据库连接（用于获取原始推文统计数据）
         
         # 加载存储策略配置
         self.storage_mode = os.getenv('ANALYSIS_STORAGE_MODE', STORAGE_MODE_HYBRID).lower()
@@ -369,6 +370,7 @@ class AnalysisDatabaseAdapter:
         logger.info(f"存储策略配置: mode={self.storage_mode}, max_sessions={self.max_sessions}, skip_tables={self.skip_tables}")
         
         self._connect()
+        self._connect_source_db()  # 连接源数据库
     
     def _parse_skip_tables(self, skip_str: str) -> Set[str]:
         """解析跳过保存的表列表"""
@@ -405,6 +407,95 @@ class AnalysisDatabaseAdapter:
         
         logger.error(f"无法解析 ANALYSIS_DATABASE_URL: {db_uri}")
         return None
+    
+    def _get_source_database_config(self) -> Optional[Dict[str, Any]]:
+        """获取源数据库配置（DATABASE_URL，存储采集的原始数据）"""
+        db_uri = os.getenv('DATABASE_URL')
+        
+        if not db_uri:
+            logger.info("未配置 DATABASE_URL，LLM 候选数据将无法补充统计字段")
+            return None
+        
+        pattern = r'mysql://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)(\?.*)?'
+        match = re.match(pattern, db_uri)
+        if match:
+            user, password, host, port, database, params = match.groups()
+            config = {
+                'host': host,
+                'port': int(port),
+                'user': user,
+                'password': password,
+                'database': database,
+                'charset': 'utf8mb4',
+                'autocommit': True,
+            }
+            
+            if params and 'ssl-mode=REQUIRED' in params:
+                config['ssl'] = {'ssl_mode': 'REQUIRED'}
+            
+            return config
+        
+        logger.warning(f"无法解析 DATABASE_URL: {db_uri}")
+        return None
+    
+    def _connect_source_db(self):
+        """建立源数据库连接"""
+        config = self._get_source_database_config()
+        if not config:
+            return
+        
+        try:
+            import pymysql
+            
+            if config.get('ssl') is None:
+                config.pop('ssl', None)
+            
+            self.source_connection = pymysql.connect(**config)
+            logger.info(f"源数据库连接成功: {config['host']}:{config['port']}/{config['database']}")
+        except Exception as e:
+            logger.warning(f"源数据库连接失败（LLM 候选数据将无法补充统计字段）: {e}")
+            self.source_connection = None
+    
+    def _get_tweet_stats_from_source(self, tweet_ids: List[str]) -> Dict[str, Dict]:
+        """
+        从源数据库获取推文统计数据
+        
+        Args:
+            tweet_ids: 推文 ID 列表
+        
+        Returns:
+            Dict[tweet_id -> {view_count, like_count, bookmark_count, reply_count}]
+        """
+        if not self.source_connection or not tweet_ids:
+            return {}
+        
+        try:
+            cursor = self.source_connection.cursor()
+            # 构建 IN 查询
+            placeholders = ','.join(['%s'] * len(tweet_ids))
+            cursor.execute(
+                f"""
+                SELECT tweet_id, view_count, favorite_count, bookmark_count, reply_count
+                FROM twitter_posts
+                WHERE tweet_id IN ({placeholders})
+                """,
+                tweet_ids
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            return {
+                str(row[0]): {
+                    'view_count': row[1] or 0,
+                    'like_count': row[2] or 0,
+                    'bookmark_count': row[3] or 0,
+                    'reply_count': row[4] or 0
+                }
+                for row in rows
+            }
+        except Exception as e:
+            logger.warning(f"从源数据库获取推文统计失败: {e}")
+            return {}
     
     def _connect(self):
         """建立数据库连接"""
@@ -624,6 +715,9 @@ class AnalysisDatabaseAdapter:
         if self.connection and self.connection.open:
             self.connection.close()
             logger.info("分析数据库连接已关闭")
+        if self.source_connection and self.source_connection.open:
+            self.source_connection.close()
+            logger.info("源数据库连接已关闭")
     
     def create_session(self, config_dict: Optional[Dict] = None) -> str:
         """
@@ -719,15 +813,14 @@ class AnalysisDatabaseAdapter:
             cursor.execute(
                 """
                 INSERT INTO user_metrics 
-                (session_id, username, followers_count, pagerank, betweenness,
+                (session_id, username, pagerank, betweenness,
                  in_degree, community_id, talkativity_ratio, professionalism_index,
                  avg_reply_latency_seconds, rising_star_velocity, avg_utility_score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     session_id,
                     row.get('username', ''),
-                    int(row.get('followers_count', 0) or 0),
                     float(row.get('pagerank', 0) or 0),
                     float(row.get('betweenness', 0) or 0),
                     int(row.get('in_degree', 0) or 0),
@@ -1407,12 +1500,13 @@ class AnalysisDatabaseAdapter:
         cursor = self.connection.cursor()
         
         # 如果指定了 session_id，则查询该会话的数据；否则查询最近的数据
+        # 注意: post_features 表不存储 view_count/like_count 等统计字段,
+        # 这些字段需要从 CSV 文件或源数据库获取
         if session_id:
             cursor.execute(
                 """
                 SELECT co.tweet_id as id, co.author, co.text, co.outlier_type, co.score,
-                       pf.view_count, pf.like_count, pf.bookmark_count, pf.reply_count,
-                       pf.utility_score, pf.asset_quadrant
+                       pf.utility_score, pf.asset_quadrant, pf.discussion_rate, pf.virality_rate
                 FROM content_outliers co
                 LEFT JOIN post_features pf ON co.tweet_id = pf.tweet_id AND co.session_id = pf.session_id
                 WHERE co.session_id = %s
@@ -1426,8 +1520,7 @@ class AnalysisDatabaseAdapter:
             cursor.execute(
                 """
                 SELECT co.tweet_id as id, co.author, co.text, co.outlier_type, co.score,
-                       pf.view_count, pf.like_count, pf.bookmark_count, pf.reply_count,
-                       pf.utility_score, pf.asset_quadrant
+                       pf.utility_score, pf.asset_quadrant, pf.discussion_rate, pf.virality_rate
                 FROM content_outliers co
                 LEFT JOIN post_features pf ON co.tweet_id = pf.tweet_id
                 WHERE co.session_id = (
@@ -1445,9 +1538,28 @@ class AnalysisDatabaseAdapter:
         cursor.close()
         
         columns = ['id', 'author', 'text', 'outlier_type', 'score',
-                   'view_count', 'like_count', 'bookmark_count', 'reply_count',
-                   'utility_score', 'asset_quadrant']
-        return [dict(zip(columns, row)) for row in rows]
+                   'utility_score', 'asset_quadrant', 'discussion_rate', 'virality_rate']
+        
+        # 先构建基础结果
+        result = [dict(zip(columns, row)) for row in rows]
+        
+        # 从源数据库补充统计字段
+        if result:
+            tweet_ids = [str(r['id']) for r in result]
+            stats_map = self._get_tweet_stats_from_source(tweet_ids)
+            
+            for r in result:
+                tweet_id = str(r['id'])
+                if tweet_id in stats_map:
+                    r.update(stats_map[tweet_id])
+                else:
+                    # 默认值
+                    r['view_count'] = 0
+                    r['like_count'] = 0
+                    r['bookmark_count'] = 0
+                    r['reply_count'] = 0
+        
+        return result
 
     def get_key_users_for_llm(self, limit: int = 50, session_id: str = None) -> List[Dict]:
         """
@@ -1565,17 +1677,18 @@ class AnalysisDatabaseAdapter:
         
         cursor = self.connection.cursor()
         
+        # 注意: post_features 表不存储 view_count/reply_count 等统计字段
         if session_id:
             cursor.execute(
                 """
                 SELECT co.tweet_id as id, co.author, co.text, co.outlier_type as opportunity_type,
-                       pf.reply_count, pf.view_count, pf.is_question
+                       pf.is_question, pf.discussion_rate, pf.utility_score
                 FROM content_outliers co
                 LEFT JOIN post_features pf ON co.tweet_id = pf.tweet_id AND co.session_id = pf.session_id
                 WHERE co.session_id = %s 
                   AND (co.outlier_type IN ('unanswered_question', 'hot_debate') 
                        OR pf.is_question = TRUE)
-                ORDER BY pf.reply_count DESC
+                ORDER BY co.score DESC
                 LIMIT %s
                 """,
                 (session_id, limit)
@@ -1584,7 +1697,7 @@ class AnalysisDatabaseAdapter:
             cursor.execute(
                 """
                 SELECT co.tweet_id as id, co.author, co.text, co.outlier_type as opportunity_type,
-                       pf.reply_count, pf.view_count, pf.is_question
+                       pf.is_question, pf.discussion_rate, pf.utility_score
                 FROM content_outliers co
                 LEFT JOIN post_features pf ON co.tweet_id = pf.tweet_id
                 WHERE co.session_id = (
@@ -1594,7 +1707,7 @@ class AnalysisDatabaseAdapter:
                 )
                 AND (co.outlier_type IN ('unanswered_question', 'hot_debate') 
                      OR pf.is_question = TRUE)
-                ORDER BY pf.reply_count DESC
+                ORDER BY co.score DESC
                 LIMIT %s
                 """,
                 (limit,)
@@ -1603,8 +1716,26 @@ class AnalysisDatabaseAdapter:
         rows = cursor.fetchall()
         cursor.close()
         
-        columns = ['id', 'author', 'text', 'opportunity_type', 'reply_count', 'view_count', 'is_question']
-        return [dict(zip(columns, row)) for row in rows]
+        columns = ['id', 'author', 'text', 'opportunity_type', 'is_question', 'discussion_rate', 'utility_score']
+        
+        # 先构建基础结果
+        result = [dict(zip(columns, row)) for row in rows]
+        
+        # 从源数据库补充统计字段
+        if result:
+            tweet_ids = [str(r['id']) for r in result]
+            stats_map = self._get_tweet_stats_from_source(tweet_ids)
+            
+            for r in result:
+                tweet_id = str(r['id'])
+                if tweet_id in stats_map:
+                    r['reply_count'] = stats_map[tweet_id].get('reply_count', 0)
+                    r['view_count'] = stats_map[tweet_id].get('view_count', 0)
+                else:
+                    r['reply_count'] = 0
+                    r['view_count'] = 0
+        
+        return result
 
     def get_viral_threads_for_llm(self, limit: int = 30, session_id: str = None) -> List[Dict]:
         """
@@ -1667,16 +1798,17 @@ class AnalysisDatabaseAdapter:
         
         cursor = self.connection.cursor()
         
+        # 注意: post_features 表不存储 view_count/like_count 等统计字段
         if session_id:
             cursor.execute(
                 """
                 SELECT pf.tweet_id, co.author, pf.funnel_signal, 
-                       pf.view_count, pf.like_count, SUBSTRING(co.text, 1, 100) as text_preview
+                       pf.utility_score, pf.virality_rate, SUBSTRING(co.text, 1, 100) as text_preview
                 FROM post_features pf
                 JOIN content_outliers co ON pf.tweet_id = co.tweet_id AND pf.session_id = co.session_id
                 WHERE pf.session_id = %s 
                   AND pf.funnel_signal IS NOT NULL
-                ORDER BY pf.view_count DESC
+                ORDER BY pf.utility_score DESC
                 LIMIT %s
                 """,
                 (session_id, limit)
@@ -1685,7 +1817,7 @@ class AnalysisDatabaseAdapter:
             cursor.execute(
                 """
                 SELECT pf.tweet_id, co.author, pf.funnel_signal, 
-                       pf.view_count, pf.like_count, SUBSTRING(co.text, 1, 100) as text_preview
+                       pf.utility_score, pf.virality_rate, SUBSTRING(co.text, 1, 100) as text_preview
                 FROM post_features pf
                 JOIN content_outliers co ON pf.tweet_id = co.tweet_id
                 WHERE pf.session_id = (
@@ -1694,7 +1826,7 @@ class AnalysisDatabaseAdapter:
                     ORDER BY completed_at DESC LIMIT 1
                 )
                 AND pf.funnel_signal IS NOT NULL
-                ORDER BY pf.view_count DESC
+                ORDER BY pf.utility_score DESC
                 LIMIT %s
                 """,
                 (limit,)
@@ -1703,8 +1835,26 @@ class AnalysisDatabaseAdapter:
         rows = cursor.fetchall()
         cursor.close()
         
-        columns = ['tweet_id', 'author', 'funnel_signal', 'view_count', 'like_count', 'text_preview']
-        return [dict(zip(columns, row)) for row in rows]
+        columns = ['tweet_id', 'author', 'funnel_signal', 'utility_score', 'virality_rate', 'text_preview']
+        
+        # 先构建基础结果
+        result = [dict(zip(columns, row)) for row in rows]
+        
+        # 从源数据库补充统计字段
+        if result:
+            tweet_ids = [str(r['tweet_id']) for r in result]
+            stats_map = self._get_tweet_stats_from_source(tweet_ids)
+            
+            for r in result:
+                tweet_id = str(r['tweet_id'])
+                if tweet_id in stats_map:
+                    r['view_count'] = stats_map[tweet_id].get('view_count', 0)
+                    r['like_count'] = stats_map[tweet_id].get('like_count', 0)
+                else:
+                    r['view_count'] = 0
+                    r['like_count'] = 0
+        
+        return result
 
     def get_latest_completed_session_id(self) -> Optional[str]:
         """获取最近完成的分析会话 ID"""
