@@ -27,12 +27,79 @@ import os
 import re
 import json
 import logging
+import math
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
 import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================
+# 辅助函数：处理 NaN 值
+# =====================================================
+
+def safe_float(value, default=0.0):
+    """安全转换为 float，处理 NaN/None/无效值"""
+    if value is None:
+        return default
+    if pd.isna(value):
+        return default
+    try:
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(value, default=0):
+    """安全转换为 int，处理 NaN/None/无效值"""
+    if value is None:
+        return default
+    if pd.isna(value):
+        return default
+    try:
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return int(f)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float_or_none(value):
+    """安全转换为 float 或 None（用于可空字段）"""
+    if value is None:
+        return None
+    if pd.isna(value):
+        return None
+    try:
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_int_or_none(value):
+    """安全转换为 int 或 None（用于可空字段）"""
+    if value is None:
+        return None
+    if pd.isna(value):
+        return None
+    try:
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return int(f)
+    except (ValueError, TypeError):
+        return None
+
 
 # =====================================================
 # 存储策略常量
@@ -361,6 +428,7 @@ class AnalysisDatabaseAdapter:
     def __init__(self):
         self.connection = None
         self.source_connection = None  # 源数据库连接（用于获取原始推文统计数据）
+        self._source_db_initialized = False  # 懒加载标志
         
         # 加载存储策略配置
         self.storage_mode = os.getenv('ANALYSIS_STORAGE_MODE', STORAGE_MODE_HYBRID).lower()
@@ -370,7 +438,7 @@ class AnalysisDatabaseAdapter:
         logger.info(f"存储策略配置: mode={self.storage_mode}, max_sessions={self.max_sessions}, skip_tables={self.skip_tables}")
         
         self._connect()
-        self._connect_source_db()  # 连接源数据库
+        # 源数据库采用懒加载，只在 LLM 任务需要时才连接
     
     def _parse_skip_tables(self, skip_str: str) -> Set[str]:
         """解析跳过保存的表列表"""
@@ -466,7 +534,15 @@ class AnalysisDatabaseAdapter:
         Returns:
             Dict[tweet_id -> {view_count, like_count, bookmark_count, reply_count}]
         """
-        if not self.source_connection or not tweet_ids:
+        if not tweet_ids:
+            return {}
+        
+        # 懒加载：首次使用时才连接源数据库
+        if not self._source_db_initialized:
+            self._connect_source_db()
+            self._source_db_initialized = True
+        
+        if not self.source_connection:
             return {}
         
         try:
@@ -821,15 +897,15 @@ class AnalysisDatabaseAdapter:
                 (
                     session_id,
                     row.get('username', ''),
-                    float(row.get('pagerank', 0) or 0),
-                    float(row.get('betweenness', 0) or 0),
-                    int(row.get('in_degree', 0) or 0),
-                    int(row.get('community_id', 0) or 0) if pd.notna(row.get('community_id')) else None,
-                    float(row.get('talkativity_ratio', 0) or 0),
-                    float(row.get('professionalism_index', 0) or 0),
-                    float(row.get('avg_reply_latency_seconds')) if pd.notna(row.get('avg_reply_latency_seconds')) else None,
-                    float(row.get('rising_star_velocity', 0) or 0),
-                    float(row.get('avg_utility_score', 0) or 0)
+                    safe_float(row.get('pagerank'), 0),
+                    safe_float(row.get('betweenness'), 0),
+                    safe_int(row.get('in_degree'), 0),
+                    safe_int_or_none(row.get('community_id')),
+                    safe_float(row.get('talkativity_ratio'), 0),
+                    safe_float(row.get('professionalism_index'), 0),
+                    safe_float_or_none(row.get('avg_reply_latency_seconds')),
+                    safe_float(row.get('rising_star_velocity'), 0),
+                    safe_float(row.get('avg_utility_score'), 0)
                 )
             )
         
@@ -863,11 +939,11 @@ class AnalysisDatabaseAdapter:
                 """,
                 (
                     session_id,
-                    stat.get('community_id', 0),
-                    stat.get('member_count', 0),
-                    stat.get('avg_pagerank', 0),
-                    stat.get('avg_betweenness', 0),
-                    stat.get('total_followers', 0),
+                    safe_int(stat.get('community_id'), 0),
+                    safe_int(stat.get('member_count'), 0),
+                    safe_float(stat.get('avg_pagerank'), 0),
+                    safe_float(stat.get('avg_betweenness'), 0),
+                    safe_int(stat.get('total_followers'), 0),
                     json.dumps(stat.get('top_members', []), ensure_ascii=False),
                     json.dumps(stat.get('topic_keywords', []), ensure_ascii=False)
                 )
@@ -904,7 +980,7 @@ class AnalysisDatabaseAdapter:
                     session_id,
                     row.get('user_a', ''),
                     row.get('user_b', ''),
-                    int(row.get('weight', 0) or 0),
+                    safe_int(row.get('weight'), 0),
                     row.get('interaction_samples', '[]'),
                     'reciprocal'
                 )
@@ -942,11 +1018,11 @@ class AnalysisDatabaseAdapter:
                     session_id,
                     str(row.get('tweet_id', '')),
                     row.get('conversation_id'),
-                    float(row.get('utility_score', 0) or 0),
-                    float(row.get('discussion_rate', 0) or 0),
+                    safe_float(row.get('utility_score'), 0),
+                    safe_float(row.get('discussion_rate'), 0),
                     bool(row.get('is_question', False)),
                     json.dumps(row.get('topic_ids', []), ensure_ascii=False),
-                    float(row.get('sentiment_score', 0) or 0) if pd.notna(row.get('sentiment_score')) else None,
+                    safe_float_or_none(row.get('sentiment_score')),
                     row.get('embedding_id')
                 )
             )
@@ -983,7 +1059,7 @@ class AnalysisDatabaseAdapter:
                     str(row.get('conversation_id', '')),
                     str(row.get('tweet_id', '')),
                     row.get('in_reply_to_tweet_id'),
-                    int(row.get('depth', 0) or 0)
+                    safe_int(row.get('depth'), 0)
                 )
             )
         
@@ -1031,7 +1107,7 @@ class AnalysisDatabaseAdapter:
                     str(row.get('text', ''))[:1000],  # 轻量级快照
                     row.get('created_at'),
                     outlier_type,
-                    float(row.get('utility_score', 0) or row.get('score', 0) or 0)
+                    safe_float(row.get('utility_score', row.get('score', 0)), 0)
                 )
             )
         
@@ -1096,8 +1172,8 @@ class AnalysisDatabaseAdapter:
                     session_id,
                     stat_type,
                     time_key,
-                    int(stat.get('activity_count', stat.get('post_count', 0)) or 0),
-                    float(stat.get('activity_percentage', 0) or 0)
+                    safe_int(stat.get('activity_count', stat.get('post_count', 0)), 0),
+                    safe_float(stat.get('activity_percentage'), 0)
                 )
             )
         
@@ -1131,9 +1207,9 @@ class AnalysisDatabaseAdapter:
                 (
                     session_id,
                     row.get('Username', ''),
-                    float(row.get('WeightedReplyScore', 0) or 0),
-                    int(row.get('ReplyCount', 0) or 0),
-                    float(row.get('AvgReplierPageRank', 0) or 0)
+                    safe_float(row.get('WeightedReplyScore'), 0),
+                    safe_int(row.get('ReplyCount'), 0),
+                    safe_float(row.get('AvgReplierPageRank'), 0)
                 )
             )
         
@@ -1164,10 +1240,10 @@ class AnalysisDatabaseAdapter:
                 """,
                 (
                     row.get('username', ''),
-                    int(row.get('followers_count', 0) or 0),
-                    int(row.get('following_count', 0) or 0),
-                    int(row.get('tweets_count', 0) or 0),
-                    int(row.get('listed_count', 0) or 0)
+                    safe_int(row.get('followers_count'), 0),
+                    safe_int(row.get('following_count'), 0),
+                    safe_int(row.get('tweets_count'), 0),
+                    safe_int(row.get('listed_count'), 0)
                 )
             )
         
@@ -1402,15 +1478,15 @@ class AnalysisDatabaseAdapter:
                     session_id,
                     str(row.get('tweet_id', '')),
                     row.get('conversation_id'),
-                    float(row.get('utility_score', 0) or 0),
-                    float(row.get('discussion_rate', 0) or 0),
-                    float(row.get('virality_rate', 0) or 0),
+                    safe_float(row.get('utility_score'), 0),
+                    safe_float(row.get('discussion_rate'), 0),
+                    safe_float(row.get('virality_rate'), 0),
                     bool(row.get('is_question', False)),
                     json.dumps(row.get('topic_ids', []), ensure_ascii=False),
-                    float(row.get('sentiment_score', 0) or 0) if pd.notna(row.get('sentiment_score')) else None,
+                    safe_float_or_none(row.get('sentiment_score')),
                     row.get('asset_quadrant', 'other'),
-                    float(row.get('thread_retention_rate', 0) or 0) if pd.notna(row.get('thread_retention_rate')) else None,
-                    int(row.get('thread_length', 0) or 0) if pd.notna(row.get('thread_length')) else None,
+                    safe_float_or_none(row.get('thread_retention_rate')),
+                    safe_int_or_none(row.get('thread_length')),
                     row.get('funnel_signal'),
                     row.get('embedding_id')
                 )
@@ -1447,12 +1523,12 @@ class AnalysisDatabaseAdapter:
                 (
                     session_id,
                     row.get('media_type', 'unknown'),
-                    int(row.get('post_count', 0) or 0),
-                    float(row.get('view_count', row.get('avg_views', 0)) or 0),
-                    float(row.get('like_count', row.get('avg_likes', 0)) or 0),
-                    float(row.get('reply_count', row.get('avg_replies', 0)) or 0),
-                    float(row.get('bookmark_count', row.get('avg_bookmarks', 0)) or 0),
-                    float(row.get('utility_score', row.get('avg_utility_score', 0)) or 0)
+                    safe_int(row.get('post_count'), 0),
+                    safe_float(row.get('view_count', row.get('avg_views', 0)), 0),
+                    safe_float(row.get('like_count', row.get('avg_likes', 0)), 0),
+                    safe_float(row.get('reply_count', row.get('avg_replies', 0)), 0),
+                    safe_float(row.get('bookmark_count', row.get('avg_bookmarks', 0)), 0),
+                    safe_float(row.get('utility_score', row.get('avg_utility_score', 0)), 0)
                 )
             )
         
