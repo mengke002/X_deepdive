@@ -879,7 +879,7 @@ class AnalysisDatabaseAdapter:
         cursor.close()
 
     def save_user_metrics(self, session_id: str, users_df: pd.DataFrame):
-        """保存用户指标数据"""
+        """保存用户指标数据（使用批量插入优化）"""
         if not self.is_available() or users_df.empty:
             return
         
@@ -894,33 +894,46 @@ class AnalysisDatabaseAdapter:
         
         cursor = self.connection.cursor()
         
-        for _, row in users_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO user_metrics 
-                (session_id, username, pagerank, betweenness,
-                 in_degree, community_id, talkativity_ratio, professionalism_index,
-                 avg_reply_latency_seconds, rising_star_velocity, avg_utility_score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    row.get('username', ''),
-                    safe_float(row.get('pagerank'), 0),
-                    safe_float(row.get('betweenness'), 0),
-                    safe_int(row.get('in_degree'), 0),
-                    safe_int_or_none(row.get('community_id')),
-                    safe_float(row.get('talkativity_ratio'), 0),
-                    safe_float(row.get('professionalism_index'), 0),
-                    safe_float_or_none(row.get('avg_reply_latency_seconds')),
-                    safe_float(row.get('rising_star_velocity'), 0),
-                    safe_float(row.get('avg_utility_score'), 0)
-                )
-            )
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO user_metrics 
+            (session_id, username, pagerank, betweenness,
+             in_degree, community_id, talkativity_ratio, professionalism_index,
+             avg_reply_latency_seconds, rising_star_velocity, avg_utility_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
         
-        self.connection.commit()
+        batch_data = []
+        total_count = len(users_df)
+        
+        for idx, row in enumerate(users_df.itertuples(index=False)):
+            batch_data.append((
+                session_id,
+                getattr(row, 'username', '') or '',
+                safe_float(getattr(row, 'pagerank', 0), 0),
+                safe_float(getattr(row, 'betweenness', 0), 0),
+                safe_int(getattr(row, 'in_degree', 0), 0),
+                safe_int_or_none(getattr(row, 'community_id', None)),
+                safe_float(getattr(row, 'talkativity_ratio', 0), 0),
+                safe_float(getattr(row, 'professionalism_index', 0), 0),
+                safe_float_or_none(getattr(row, 'avg_reply_latency_seconds', None)),
+                safe_float(getattr(row, 'rising_star_velocity', 0), 0),
+                safe_float(getattr(row, 'avg_utility_score', 0), 0)
+            ))
+            
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+        
+        # 插入剩余数据
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+        
         cursor.close()
-        logger.info(f"保存了 {len(users_df)} 条用户指标数据")
+        logger.info(f"保存了 {total_count} 条用户指标数据（批量插入）")
     
     def save_community_stats(self, session_id: str, community_stats: List[Dict]):
         """保存社群统计数据"""
@@ -1238,7 +1251,7 @@ class AnalysisDatabaseAdapter:
         logger.info(f"保存了 {len(stats_data)} 条 {stat_type} 统计数据")
     
     def save_potential_new_users(self, session_id: str, users_df: pd.DataFrame):
-        """保存潜在新用户数据"""
+        """保存潜在新用户数据（使用批量插入优化）"""
         if not self.is_available() or users_df.empty:
             return
         
@@ -1253,25 +1266,40 @@ class AnalysisDatabaseAdapter:
         
         cursor = self.connection.cursor()
         
-        for _, row in users_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO potential_new_users 
-                (session_id, username, weighted_reply_score, reply_count, avg_replier_pagerank)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    row.get('Username', ''),
-                    safe_float(row.get('WeightedReplyScore'), 0),
-                    safe_int(row.get('ReplyCount'), 0),
-                    safe_float(row.get('AvgReplierPageRank'), 0)
-                )
-            )
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO potential_new_users 
+            (session_id, username, weighted_reply_score, reply_count, avg_replier_pagerank)
+            VALUES (%s, %s, %s, %s, %s)
+        """
         
-        self.connection.commit()
+        batch_data = []
+        total_count = len(users_df)
+        
+        for idx, row in enumerate(users_df.itertuples(index=False)):
+            # 处理列名可能是 Username 或 username 的情况
+            username = getattr(row, 'Username', None) or getattr(row, 'username', '') or ''
+            batch_data.append((
+                session_id,
+                username,
+                safe_float(getattr(row, 'WeightedReplyScore', 0), 0),
+                safe_int(getattr(row, 'ReplyCount', 0), 0),
+                safe_float(getattr(row, 'AvgReplierPageRank', 0), 0)
+            ))
+            
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+        
+        # 插入剩余数据
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+        
         cursor.close()
-        logger.info(f"保存了 {len(users_df)} 条潜在新用户数据")
+        logger.info(f"保存了 {total_count} 条潜在新用户数据（批量插入）")
 
     # =====================================================
     # 新增保存方法 (基于 RESULT_DB_RECOMMENDATIONS.md)
@@ -1279,7 +1307,7 @@ class AnalysisDatabaseAdapter:
     
     def save_user_stats_history(self, users_df: pd.DataFrame):
         """
-        保存用户历史快照数据（用于时序分析）
+        保存用户历史快照数据（用于时序分析，使用批量插入优化）
         建议每天运行一次快照任务
         """
         if not self.is_available() or users_df.empty:
@@ -1287,23 +1315,36 @@ class AnalysisDatabaseAdapter:
         
         cursor = self.connection.cursor()
         
-        for _, row in users_df.iterrows():
-            cursor.execute(
-                """
-                INSERT INTO user_stats_history 
-                (username, followers_count, following_count, tweets_count, listed_count)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    row.get('username', ''),
-                    safe_int(row.get('followers_count'), 0),
-                    safe_int(row.get('following_count'), 0),
-                    safe_int(row.get('tweets_count'), 0),
-                    safe_int(row.get('listed_count'), 0)
-                )
-            )
+        # 批量插入优化
+        batch_size = 1000
+        insert_sql = """
+            INSERT INTO user_stats_history 
+            (username, followers_count, following_count, tweets_count, listed_count)
+            VALUES (%s, %s, %s, %s, %s)
+        """
         
-        self.connection.commit()
+        batch_data = []
+        total_count = len(users_df)
+        
+        for idx, row in enumerate(users_df.itertuples(index=False)):
+            batch_data.append((
+                getattr(row, 'username', '') or '',
+                safe_int(getattr(row, 'followers_count', 0), 0),
+                safe_int(getattr(row, 'following_count', 0), 0),
+                safe_int(getattr(row, 'tweets_count', 0), 0),
+                safe_int(getattr(row, 'listed_count', 0), 0)
+            ))
+            
+            if len(batch_data) >= batch_size:
+                cursor.executemany(insert_sql, batch_data)
+                self.connection.commit()
+                batch_data = []
+        
+        # 插入剩余数据
+        if batch_data:
+            cursor.executemany(insert_sql, batch_data)
+            self.connection.commit()
+        
         cursor.close()
         logger.info(f"保存了 {len(users_df)} 条用户历史快照数据")
 

@@ -950,22 +950,29 @@ class DeepMiner(MacroNetworkAnalyzer):
         try:
             # 1. 保存用户指标
             if self.users_profile:
+                print("  [1/6] 保存用户指标...")
                 df_users = pd.DataFrame(self.users_profile.values())
                 self.analysis_db.save_user_metrics(self.session_id, df_users)
+                print(f"    ✓ 用户指标: {len(df_users)} 条")
             
             # 2. 保存用户历史快照 (用于时序分析)
             if self.users_profile:
+                print("  [2/6] 保存用户历史快照...")
                 df_users = pd.DataFrame(self.users_profile.values())
                 if 'followers_count' in df_users.columns:
                     self.analysis_db.save_user_stats_history(df_users)
+                    print(f"    ✓ 用户历史快照: {len(df_users)} 条")
             
             # 3. 保存推文特征 (升级版)
             if self.content_stats:
+                print(f"  [3/6] 保存推文特征 ({len(self.content_stats)} 条)...")
                 df_features = pd.DataFrame(self.content_stats)
                 df_features['tweet_id'] = df_features['id']
                 self.analysis_db.save_post_features_enhanced(self.session_id, df_features)
+                print(f"    ✓ 推文特征: {len(df_features)} 条")
             
             # 4. 保存强互惠关系
+            print("  [4/6] 保存强互惠关系...")
             if self.interaction_pairs:
                 df_inter = pd.DataFrame(self.interaction_pairs)
                 pair_counts = df_inter.groupby(['source', 'target']).size().reset_index(name='count')
@@ -989,8 +996,14 @@ class DeepMiner(MacroNetworkAnalyzer):
                 if strong_ties:
                     df_ties = pd.DataFrame(strong_ties)
                     self.analysis_db.save_strong_ties(self.session_id, df_ties)
+                    print(f"    ✓ 强互惠关系: {len(strong_ties)} 条")
+                else:
+                    print("    - 无强互惠关系数据")
+            else:
+                print("    - 无互动数据")
             
             # 4.5 保存社群统计
+            print("  [5/6] 保存社群统计...")
             if self.community_map:
                 # 按社群聚合统计
                 community_data = defaultdict(lambda: {
@@ -1036,8 +1049,12 @@ class DeepMiner(MacroNetworkAnalyzer):
                 
                 if community_stats:
                     self.analysis_db.save_community_stats(self.session_id, community_stats)
+                    print(f"    ✓ 社群统计: {len(community_stats)} 个社群")
+            else:
+                print("    - 无社群数据")
             
             # 5. 保存内容异常点
+            print("  [6/6] 保存内容异常点和活跃度统计...")
             if self.content_stats:
                 df_content = pd.DataFrame(self.content_stats)
                 # 筛选高价值内容
