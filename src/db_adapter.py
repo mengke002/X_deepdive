@@ -4,10 +4,14 @@
 """
 import os
 import logging
+import warnings
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
 
 import pandas as pd
+
+# 抑制 pandas 关于非 SQLAlchemy 连接的警告
+warnings.filterwarnings('ignore', message='.*pandas only supports SQLAlchemy.*')
 
 logger = logging.getLogger(__name__)
 
