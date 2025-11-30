@@ -522,6 +522,8 @@ def main():
         logger.info(f"找到 {len(top_posts)} 条高互动推文")
         
         generated = 0
+        all_candidates = []  # 收集所有候选用于本地保存
+        
         for _, row in top_posts.iterrows():
             reply_result = flywheel.reply_generator.generate_reply_draft(
                 tweet_text=row['Text'],
@@ -543,8 +545,43 @@ def main():
                     reply_result=reply_result
                 )
                 generated += 1
+                
+                # 收集候选数据用于本地保存
+                all_candidates.append({
+                    'tweet_id': str(row['ID']),
+                    'author_username': row['Author Username'],
+                    'tweet_text': row['Text'][:500],
+                    'detected_signal': 'batch_high_engagement',
+                    'reply_draft': reply_result.get('reply_draft', ''),
+                    'reply_style': reply_result.get('style', ''),
+                    'generated_at': reply_result.get('generated_at', datetime.now().isoformat()),
+                    'model_used': reply_result.get('model_used', ''),
+                    'stats': {
+                        'views': int(row.get('View Count', 0) or 0),
+                        'likes': int(row.get('Favorite Count', 0) or 0),
+                        'replies': int(row.get('Reply Count', 0) or 0),
+                        'retweets': int(row.get('Retweet Count', 0) or 0)
+                    }
+                })
         
         logger.info(f"✅ 生成了 {generated} 个回复候选")
+        
+        # 保存到本地文件
+        if all_candidates:
+            output_dir = 'output/flywheel'
+            os.makedirs(output_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = os.path.join(output_dir, f'smart_reply_candidates_{timestamp}.json')
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'generated_at': datetime.now().isoformat(),
+                    'total_candidates': len(all_candidates),
+                    'candidates': all_candidates
+                }, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"📁 本地文件已保存: {output_file}")
         
     elif args.mode == 'realtime':
         # 实时模式：持续监控（本地使用）
