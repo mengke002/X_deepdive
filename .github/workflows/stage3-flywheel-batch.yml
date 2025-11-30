@@ -42,6 +42,8 @@ jobs:
           ANALYSIS_DATABASE_URL: ${{ secrets.ANALYSIS_DATABASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          LLM_FAST_MODELS: ${{ secrets.LLM_FAST_MODELS }}
+          LLM_DEEP_MODELS: ${{ secrets.LLM_DEEP_MODELS }}
         run: |
           echo "🚀 Running flywheel batch mode..."
           python -m src.flywheel --mode batch --limit ${{ github.event.inputs.limit || '20' }}
