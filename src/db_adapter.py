@@ -25,6 +25,26 @@ class DatabaseAdapter:
     
     def _get_database_config(self) -> Dict[str, Any]:
         """获取数据库配置"""
+        
+        def _configure_ssl(config, force_ssl=False):
+            """配置SSL并自动查找CA证书"""
+            if force_ssl:
+                config['ssl'] = {}
+                # 尝试查找系统CA证书
+                # GitHub Actions (Ubuntu) 通常在 /etc/ssl/certs/ca-certificates.crt
+                possible_paths = [
+                    '/etc/ssl/certs/ca-certificates.crt',  # Debian/Ubuntu
+                    '/etc/pki/tls/certs/ca-bundle.crt',    # Fedora/RHEL
+                    '/etc/ssl/cert.pem',                   # macOS
+                    '/usr/local/etc/openssl/cert.pem',     # macOS Homebrew
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        config['ssl']['ca'] = path
+                        break
+            return config
+
         db_uri = os.getenv('DATABASE_URL')
         
         if db_uri:
@@ -43,22 +63,23 @@ class DatabaseAdapter:
                     'autocommit': True,
                 }
                 
-                if params and 'ssl-mode=REQUIRED' in params:
-                    config['ssl'] = {'ssl_mode': 'REQUIRED'}
-                
-                return config
+                force_ssl = (params and 'ssl-mode=REQUIRED' in params) or 'tidbcloud.com' in host
+                return _configure_ssl(config, force_ssl)
         
         # 从单独的环境变量读取
-        return {
-            'host': os.getenv('DB_HOST', 'localhost'),
+        db_host = os.getenv('DB_HOST', 'localhost')
+        config = {
+            'host': db_host,
             'port': int(os.getenv('DB_PORT', '3306')),
             'user': os.getenv('DB_USER', 'root'),
             'password': os.getenv('DB_PASSWORD', ''),
             'database': os.getenv('DB_NAME', 'twitter'),
             'charset': 'utf8mb4',
             'autocommit': True,
-            'ssl': {'ssl_mode': 'REQUIRED'} if os.getenv('DB_SSL', 'false').lower() == 'true' else None
         }
+        
+        force_ssl = os.getenv('DB_SSL', 'false').lower() == 'true' or 'tidbcloud.com' in db_host
+        return _configure_ssl(config, force_ssl)
     
     def _connect(self):
         """建立数据库连接"""

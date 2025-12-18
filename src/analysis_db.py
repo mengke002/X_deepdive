@@ -467,8 +467,20 @@ class AnalysisDatabaseAdapter:
                 'autocommit': True,
             }
             
-            if params and 'ssl-mode=REQUIRED' in params:
-                config['ssl'] = {'ssl_mode': 'REQUIRED'}
+            # 自动配置 SSL (TiDB Cloud 强制要求)
+            if (params and 'ssl-mode=REQUIRED' in params) or 'tidbcloud.com' in host:
+                config['ssl'] = {}
+                # 尝试查找系统CA证书
+                possible_paths = [
+                    '/etc/ssl/certs/ca-certificates.crt',  # Debian/Ubuntu
+                    '/etc/pki/tls/certs/ca-bundle.crt',    # Fedora/RHEL
+                    '/etc/ssl/cert.pem',                   # macOS
+                    '/usr/local/etc/openssl/cert.pem',     # macOS Homebrew
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        config['ssl']['ca'] = path
+                        break
             
             return config
         
@@ -497,8 +509,20 @@ class AnalysisDatabaseAdapter:
                 'autocommit': True,
             }
             
-            if params and 'ssl-mode=REQUIRED' in params:
-                config['ssl'] = {'ssl_mode': 'REQUIRED'}
+            # 自动配置 SSL (TiDB Cloud 强制要求)
+            if (params and 'ssl-mode=REQUIRED' in params) or 'tidbcloud.com' in host:
+                config['ssl'] = {}
+                # 尝试查找系统CA证书
+                possible_paths = [
+                    '/etc/ssl/certs/ca-certificates.crt',  # Debian/Ubuntu
+                    '/etc/pki/tls/certs/ca-bundle.crt',    # Fedora/RHEL
+                    '/etc/ssl/cert.pem',                   # macOS
+                    '/usr/local/etc/openssl/cert.pem',     # macOS Homebrew
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        config['ssl']['ca'] = path
+                        break
             
             return config
         
